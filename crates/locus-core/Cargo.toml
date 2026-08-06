@@ -13,6 +13,7 @@ tracing.workspace = true
 rusqlite.workspace = true
 uuid.workspace = true
 time.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -491,7 +491,7 @@ Convert search results into a short Markdown brief.
 
 ## U-005: CLI Core Commands
 
-Status: Backlog  
+Status: Done 
 Priority: P0  
 Depends On: U-003, U-004  
 Blocks: U-006, U-008, U-009
@@ -506,21 +506,21 @@ Implement the `locus` CLI.
 
 ### Scope
 
-- [ ] Implement `locus remember`.
-- [ ] Implement `locus search`.
-- [ ] Implement `locus context`.
-- [ ] Implement `locus forget`.
-- [ ] Implement `locus status`.
-- [ ] Implement `locus doctor`.
-- [ ] Implement `locus reindex`.
-- [ ] Support `--namespace`.
-- [ ] Support `--type`.
-- [ ] Support `--importance`.
-- [ ] Support `--json`.
-- [ ] Support `--limit`.
-- [ ] Make CLI startup fast.
-- [ ] Make errors exit with non-zero status.
-- [ ] Make help text clear.
+- [x] Implement `locus remember`.
+- [x] Implement `locus search`.
+- [x] Implement `locus context`.
+- [x] Implement `locus forget`.
+- [x] Implement `locus status`.
+- [x] Implement `locus doctor`.
+- [x] Implement `locus reindex`.
+- [x] Support `--namespace`.
+- [x] Support `--type`.
+- [x] Support `--importance`.
+- [x] Support `--json`.
+- [x] Support `--limit`.
+- [x] Make CLI startup fast.
+- [x] Make errors exit with non-zero status.
+- [x] Make help text clear.
 
 ### CLI Behavior
 
@@ -536,22 +536,22 @@ locus reindex
 
 ### Tests
 
-- [ ] `remember` stores memory.
-- [ ] `search` finds memory.
-- [ ] `context` returns compressed Markdown.
-- [ ] `forget` deletes memory.
-- [ ] `status` shows database and search engine state.
-- [ ] Invalid command fails.
-- [ ] `--json` returns valid JSON.
-- [ ] CLI does not panic on bad input.
+- [x] `remember` stores memory.
+- [x] `search` finds memory.
+- [x] `context` returns compressed Markdown.
+- [x] `forget` deletes memory.
+- [x] `status` shows database and search engine state.
+- [x] Invalid command fails.
+- [x] `--json` returns valid JSON.
+- [x] CLI does not panic on bad input.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] CLI help updated.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] CLI help updated.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
 
 ---
 
