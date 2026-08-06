@@ -284,7 +284,7 @@ Create a Cargo workspace with separate crates for core, CLI, daemon, MCP, and te
 
 ## U-002: Canonical Memory Store
 
-Status: Backlog  
+Status: Done
 Priority: P0  
 Depends On: U-001  
 Blocks: U-003, U-004, U-005, U-006
@@ -299,40 +299,40 @@ Use SQLite as the canonical store.
 
 ### Scope
 
-- [ ] Create local database at `~/.locus/locus.db`.
-- [ ] Enable WAL mode.
-- [ ] Set safe pragmas for speed and durability.
-- [ ] Create `memories` table.
-- [ ] Create `entities` table.
-- [ ] Create `memory_entities` join table.
-- [ ] Create `migrations` table.
-- [ ] Implement migration runner.
-- [ ] Implement insert memory API.
-- [ ] Implement update memory API.
-- [ ] Implement delete memory API.
-- [ ] Implement get memory by ID API.
-- [ ] Implement list memories API.
-- [ ] Support namespace filtering.
-- [ ] Support type filtering.
-- [ ] Validate all memory fields.
-- [ ] Ensure database file permissions are restrictive.
+- [x] Create local database at `~/.locus/locus.db`.
+- [x] Enable WAL mode.
+- [x] Set safe pragmas for speed and durability.
+- [x] Create `memories` table.
+- [x] Create `entities` table.
+- [x] Create `memory_entities` join table.
+- [x] Create `migrations` table.
+- [x] Implement migration runner.
+- [x] Implement insert memory API.
+- [x] Implement update memory API.
+- [x] Implement delete memory API.
+- [x] Implement get memory by ID API.
+- [x] Implement list memories API.
+- [x] Support namespace filtering.
+- [x] Support type filtering.
+- [x] Validate all memory fields.
+- [x] Ensure database file permissions are restrictive.
 
 ### Tests
 
-- [ ] Database initialization is idempotent.
-- [ ] Migration runner can apply migrations twice safely.
-- [ ] Insert memory works.
-- [ ] Invalid memory type is rejected.
-- [ ] Missing namespace is rejected or defaulted safely.
-- [ ] Delete memory works.
-- [ ] Namespace isolation works.
-- [ ] Database file is not created world-writable.
+- [x] Database initialization is idempotent.
+- [x] Migration runner can apply migrations twice safely.
+- [x] Insert memory works.
+- [x] Invalid memory type is rejected.
+- [x] Missing namespace is rejected or defaulted safely.
+- [x] Delete memory works.
+- [x] Namespace isolation works.
+- [x] Database file is not created world-writable.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Status changed to `Ready for Review`.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Status changed to `Ready for Review`.
 - [ ] Human approval received.
 
 ---

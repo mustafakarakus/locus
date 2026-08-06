@@ -6,6 +6,8 @@
 
 pub mod error;
 pub mod logging;
+pub mod memory;
+pub mod store;
 
 pub use error::{Error, Result};
 
