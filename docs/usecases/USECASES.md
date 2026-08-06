@@ -333,7 +333,7 @@ Use SQLite as the canonical store.
 - [x] All scope items complete.
 - [x] All tests green.
 - [x] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] Human approval received.
 
 ---
 
