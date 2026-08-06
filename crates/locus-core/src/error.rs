@@ -27,6 +27,10 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// An underlying SQLite operation failed.
+    #[error("database error: {0}")]
+    Sql(#[from] rusqlite::Error),
+
     /// A catch-all for errors that do not yet have a dedicated variant.
     #[error("{0}")]
     Other(String),
@@ -47,5 +51,11 @@ mod tests {
         let io = std::io::Error::other("boom");
         let err: Error = io.into();
         assert!(matches!(err, Error::Io(_)));
+    }
+
+    #[test]
+    fn sql_error_converts() {
+        let err: Error = rusqlite::Error::InvalidQuery.into();
+        assert!(matches!(err, Error::Sql(_)));
     }
 }

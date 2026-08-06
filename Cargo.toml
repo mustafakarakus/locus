@@ -22,6 +22,10 @@ locus-testkit = { path = "crates/locus-testkit" }
 anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+uuid = { version = "1", features = ["v4", "fast-rng"] }
+time = { version = "0.3", features = ["std"] }
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

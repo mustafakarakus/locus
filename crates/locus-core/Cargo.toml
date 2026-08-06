@@ -10,6 +10,12 @@ description = "Core memory model, storage, search, and context brief engine for 
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
