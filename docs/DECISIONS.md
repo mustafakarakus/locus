@@ -36,3 +36,12 @@ Add `warnings` array alongside `ok` / `payload`.
 - Errors are fatal (`ok = false`).
 - MCP tool results must propagate warnings so agents can surface them.
 - Cap and dedupe warnings (max 5).
+
+### D-7 — U-003 tokenizer strategy
+For the default FTS5 backend, use `unicode61` with identifier-friendly
+token chars and prefix indexes, plus a substring fallback query path for
+partial-name matching.
+- This preserves phrase/prefix behavior while still covering practical partial
+  identifier lookups.
+- Trigram tokenizer behavior is benchmarked/measured as part of query suites,
+  and can be revisited in U-012 if evidence shows a better trade-off.

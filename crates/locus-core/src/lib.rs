@@ -7,6 +7,7 @@
 pub mod error;
 pub mod logging;
 pub mod memory;
+pub mod search;
 pub mod store;
 
 pub use error::{Error, Result};

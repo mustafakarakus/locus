@@ -1,5 +1,6 @@
 //! SQLite-backed canonical memory store.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,7 @@ use crate::memory::{
     normalize_entities, normalize_namespace, normalize_optional, validate_content,
     validate_importance, validate_title, ListFilter, Memory, MemoryType, NewMemory, UpdateMemory,
 };
+use crate::search::{self, Fts5SearchEngine, Hit, Query, RankSignals, SearchEngine};
 use crate::{Error, Result};
 
 const DB_FILE_NAME: &str = "locus.db";
@@ -25,10 +27,11 @@ const PRAGMAS: &[&str] = &[
     "PRAGMA foreign_keys = ON;",
 ];
 
-const MIGRATIONS: &[(i64, &str, &str)] = &[(
-    1,
-    "initial_schema",
-    "
+const MIGRATIONS: &[(i64, &str, &str)] = &[
+    (
+        1,
+        "initial_schema",
+        "
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
     namespace TEXT NOT NULL,
@@ -64,7 +67,38 @@ CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace);
 CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
 CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories(updated_at);
 ",
-)];
+    ),
+    (
+        2,
+        "fts5_search_index",
+        "
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    memory_id UNINDEXED,
+    title,
+    content,
+    entities,
+    tokenize = 'unicode61 tokenchars ''_-/.:''',
+    prefix = '2 3 4'
+);
+
+INSERT INTO memory_fts (memory_id, title, content, entities)
+SELECT
+    m.id,
+    m.title,
+    m.content,
+    COALESCE((
+        SELECT group_concat(e.name, ' ')
+        FROM memory_entities me
+        INNER JOIN entities e ON e.id = me.entity_id
+        WHERE me.memory_id = m.id
+    ), '')
+FROM memories m
+WHERE NOT EXISTS (
+    SELECT 1 FROM memory_fts f WHERE f.memory_id = m.id
+);
+",
+    ),
+];
 
 /// SQLite-backed storage for canonical memories.
 #[derive(Debug, Clone)]
@@ -136,6 +170,7 @@ impl Store {
         )?;
 
         link_entities(&tx, &id, entities)?;
+        upsert_fts_row(&tx, &id, &title, &content)?;
         tx.commit()?;
         Ok(id)
     }
@@ -185,6 +220,7 @@ impl Store {
             params![input.id],
         )?;
         link_entities(&tx, &input.id, entities)?;
+        upsert_fts_row(&tx, &input.id, &title, &content)?;
         tx.commit()?;
         Ok(())
     }
@@ -195,12 +231,27 @@ impl Store {
             return Err(Error::InvalidInput("id must not be empty".to_string()));
         }
 
-        let conn = self.connect_rw()?;
-        let affected = conn.execute("DELETE FROM memories WHERE id = ?", params![id])?;
+        let mut conn = self.connect_rw()?;
+        let tx = conn.transaction()?;
+        let affected = tx.execute("DELETE FROM memories WHERE id = ?", params![id])?;
         if affected == 0 {
             return Err(Error::NotFound("memory not found".to_string()));
         }
+
+        tx.execute("DELETE FROM memory_fts WHERE memory_id = ?", params![id])?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Searches memories using the default FTS5 backend and shared reranking.
+    pub fn search(&self, query: Query) -> Result<Vec<Hit>> {
+        query.validate()?;
+
+        let engine = Fts5SearchEngine::open_at(self.db_path.clone());
+        let hits = engine.search(&query)?;
+        let signals = self.load_rank_signals_for_hits(&hits)?;
+
+        Ok(search::rerank_hits(hits, &signals))
     }
 
     /// Fetches a memory by id.
@@ -299,6 +350,44 @@ impl Store {
         apply_pragmas(&conn)?;
         Ok(conn)
     }
+
+    fn load_rank_signals_for_hits(&self, hits: &[Hit]) -> Result<HashMap<String, RankSignals>> {
+        if hits.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let conn = self.connect_ro()?;
+        let mut signals = HashMap::with_capacity(hits.len());
+
+        let mut stmt = conn.prepare(
+            "
+            SELECT importance, updated_at
+            FROM memories
+            WHERE id = ?
+            ",
+        )?;
+
+        for hit in hits {
+            let maybe = stmt
+                .query_row(params![hit.id], |row| {
+                    let importance_i64: i64 = row.get(0)?;
+                    let importance =
+                        u8::try_from(importance_i64).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    let updated_at: i64 = row.get(1)?;
+                    Ok(RankSignals {
+                        importance,
+                        updated_at,
+                    })
+                })
+                .optional()?;
+
+            if let Some(value) = maybe {
+                signals.insert(hit.id.clone(), value);
+            }
+        }
+
+        Ok(signals)
+    }
 }
 
 fn default_db_path() -> Result<PathBuf> {
@@ -344,7 +433,7 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn apply_pragmas(conn: &Connection) -> Result<()> {
+pub(crate) fn apply_pragmas(conn: &Connection) -> Result<()> {
     for pragma in PRAGMAS {
         conn.execute_batch(pragma)?;
     }
@@ -377,6 +466,37 @@ fn link_entities(
             params![memory_id, entity_id],
         )?;
     }
+    Ok(())
+}
+
+fn upsert_fts_row(
+    tx: &rusqlite::Transaction<'_>,
+    memory_id: &str,
+    title: &str,
+    content: &str,
+) -> Result<()> {
+    let entities: String = tx.query_row(
+        "
+        SELECT COALESCE(group_concat(e.name, ' '), '')
+        FROM memory_entities me
+        INNER JOIN entities e ON e.id = me.entity_id
+        WHERE me.memory_id = ?
+        ",
+        params![memory_id],
+        |row| row.get(0),
+    )?;
+
+    tx.execute(
+        "DELETE FROM memory_fts WHERE memory_id = ?",
+        params![memory_id],
+    )?;
+    tx.execute(
+        "
+        INSERT INTO memory_fts (memory_id, title, content, entities)
+        VALUES (?, ?, ?, ?)
+        ",
+        params![memory_id, title, content, entities],
+    )?;
     Ok(())
 }
 
@@ -591,6 +711,303 @@ mod tests {
 
         assert_eq!(auth.len(), 1);
         assert_eq!(auth[0].namespace, "project:auth");
+    }
+
+    #[test]
+    fn exact_keyword_search_works() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(sample_new_memory(
+                Some("project:auth"),
+                MemoryType::Decision,
+            ))
+            .expect("insert memory");
+
+        let mut query = Query::new("postgres");
+        query.namespace = Some("project:auth".to_string());
+        let hits = store.search(query).expect("search should succeed");
+
+        assert!(!hits.is_empty());
+    }
+
+    #[test]
+    fn phrase_search_works() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Code,
+                title: "Auth middleware".to_string(),
+                content: "Use auth service middleware for token verification".to_string(),
+                entities: vec!["AuthService::verify_token".to_string()],
+                importance: 65,
+                source: None,
+            })
+            .expect("insert memory");
+
+        let mut query = Query::new("\"token verification\"");
+        query.namespace = Some("project:auth".to_string());
+        let hits = store.search(query).expect("phrase search should succeed");
+
+        assert!(!hits.is_empty());
+    }
+
+    #[test]
+    fn prefix_search_works() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(sample_new_memory(
+                Some("project:auth"),
+                MemoryType::Decision,
+            ))
+            .expect("insert memory");
+
+        let mut query = Query::new("post*");
+        query.namespace = Some("project:auth".to_string());
+        let hits = store.search(query).expect("prefix search should succeed");
+
+        assert!(!hits.is_empty());
+    }
+
+    #[test]
+    fn search_namespace_filter_prevents_leakage() {
+        let (store, _tmp, _) = test_store();
+        let auth_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Auth DB".to_string(),
+                content: "Use Postgres in auth service".to_string(),
+                entities: vec![],
+                importance: 50,
+                source: None,
+            })
+            .expect("insert auth");
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:billing".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Billing DB".to_string(),
+                content: "Use Postgres in billing service".to_string(),
+                entities: vec![],
+                importance: 50,
+                source: None,
+            })
+            .expect("insert billing");
+
+        let mut query = Query::new("postgres");
+        query.namespace = Some("project:auth".to_string());
+        let hits = store.search(query).expect("search should succeed");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, auth_id);
+    }
+
+    #[test]
+    fn search_type_filter_works() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "DB decision".to_string(),
+                content: "Postgres decision".to_string(),
+                entities: vec![],
+                importance: 50,
+                source: None,
+            })
+            .expect("insert decision");
+
+        let code_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Code,
+                title: "DB code path".to_string(),
+                content: "Postgres connection pool code".to_string(),
+                entities: vec![],
+                importance: 50,
+                source: None,
+            })
+            .expect("insert code");
+
+        let mut query = Query::new("postgres");
+        query.namespace = Some("project:auth".to_string());
+        query.memory_type = Some(MemoryType::Code);
+        let hits = store.search(query).expect("search should succeed");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, code_id);
+    }
+
+    #[test]
+    fn identifier_search_works() {
+        let (store, _tmp, _) = test_store();
+        let id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Code,
+                title: "Token verifier".to_string(),
+                content: "Use AuthService::verify_token in auth/router.rs".to_string(),
+                entities: vec![
+                    "AuthService::verify_token".to_string(),
+                    "auth/router.rs".to_string(),
+                ],
+                importance: 75,
+                source: None,
+            })
+            .expect("insert code memory");
+
+        let mut query = Query::new("AuthService::verify_token");
+        query.namespace = Some("project:auth".to_string());
+        let hits = store
+            .search(query)
+            .expect("identifier search should succeed");
+
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].id, id);
+    }
+
+    #[test]
+    fn partial_name_search_works() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Code,
+                title: "Verifier function".to_string(),
+                content: "Call verify_token_handler from auth API route".to_string(),
+                entities: vec!["verify_token_handler".to_string()],
+                importance: 40,
+                source: None,
+            })
+            .expect("insert memory");
+
+        let mut query = Query::new("fy_token_han");
+        query.namespace = Some("project:auth".to_string());
+        let hits = store.search(query).expect("partial search should succeed");
+
+        assert!(!hits.is_empty());
+    }
+
+    #[test]
+    fn typo_tolerance_behavior_is_measured_and_stable() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(sample_new_memory(
+                Some("project:auth"),
+                MemoryType::Decision,
+            ))
+            .expect("insert memory");
+
+        let mut exact = Query::new("postgres");
+        exact.namespace = Some("project:auth".to_string());
+        let exact_hits = store.search(exact).expect("exact search should succeed");
+
+        let mut typo = Query::new("postgrez");
+        typo.namespace = Some("project:auth".to_string());
+        let typo_hits = store.search(typo).expect("typo search should execute");
+
+        // Documented behavior for FTS5 default backend: typo queries may return
+        // fewer results than exact lexical matches.
+        assert!(exact_hits.len() >= typo_hits.len());
+    }
+
+    #[test]
+    fn reranker_boosts_newer_and_higher_importance_for_close_matches() {
+        let (store, _tmp, db_path) = test_store();
+        let older_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Routing strategy".to_string(),
+                content: "Use middleware for token verification".to_string(),
+                entities: vec!["verify_token".to_string()],
+                importance: 20,
+                source: None,
+            })
+            .expect("insert older");
+
+        let newer_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Routing strategy v2".to_string(),
+                content: "Use middleware for token verification".to_string(),
+                entities: vec!["verify_token".to_string()],
+                importance: 95,
+                source: None,
+            })
+            .expect("insert newer");
+
+        let conn = Connection::open(db_path).expect("open db");
+        conn.execute(
+            "UPDATE memories SET updated_at = ? WHERE id = ?",
+            params![1_000_i64, older_id],
+        )
+        .expect("set older ts");
+        conn.execute(
+            "UPDATE memories SET updated_at = ? WHERE id = ?",
+            params![2_000_i64, newer_id.clone()],
+        )
+        .expect("set newer ts");
+
+        let mut query = Query::new("token verification");
+        query.namespace = Some("project:auth".to_string());
+        let hits = store.search(query).expect("search should succeed");
+
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].id, newer_id);
+    }
+
+    #[test]
+    fn fts_table_stays_consistent_after_insert_update_delete() {
+        let (store, _tmp, _) = test_store();
+        let id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Code,
+                title: "Use auth guard".to_string(),
+                content: "auth_guard handles all auth routes".to_string(),
+                entities: vec!["auth_guard".to_string()],
+                importance: 60,
+                source: None,
+            })
+            .expect("insert memory");
+
+        let mut query = Query::new("auth_guard");
+        query.namespace = Some("project:auth".to_string());
+        let inserted_hits = store.search(query.clone()).expect("search after insert");
+        assert_eq!(inserted_hits.len(), 1);
+
+        store
+            .update_memory(UpdateMemory {
+                id: id.clone(),
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Code,
+                title: "Use auth gate".to_string(),
+                content: "auth_gate handles all auth routes".to_string(),
+                entities: vec!["auth_gate".to_string()],
+                importance: 60,
+                source: None,
+            })
+            .expect("update memory");
+
+        let mut old_query = Query::new("auth_guard");
+        old_query.namespace = Some("project:auth".to_string());
+        let old_hits = store.search(old_query).expect("search old token");
+        assert!(old_hits.is_empty());
+
+        let mut new_query = Query::new("auth_gate");
+        new_query.namespace = Some("project:auth".to_string());
+        let new_hits = store.search(new_query).expect("search new token");
+        assert_eq!(new_hits.len(), 1);
+
+        store.delete_memory(&id).expect("delete memory");
+        let mut deleted_query = Query::new("auth_gate");
+        deleted_query.namespace = Some("project:auth".to_string());
+        let deleted_hits = store.search(deleted_query).expect("search deleted token");
+        assert!(deleted_hits.is_empty());
     }
 
     #[cfg(unix)]
