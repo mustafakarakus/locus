@@ -239,7 +239,7 @@ Do not store dependency or status information in the index table.
 
 ## U-001: Rust Workspace Scaffold
 
-Status: Approved  
+Status: Done  
 Priority: P0  
 Depends On: None  
 Blocks: All
