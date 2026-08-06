@@ -26,6 +26,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 uuid = { version = "1", features = ["v4", "fast-rng"] }
 time = { version = "0.3", features = ["std"] }
 tempfile = "3"
+criterion = "0.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

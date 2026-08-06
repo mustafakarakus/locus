@@ -339,7 +339,7 @@ Use SQLite as the canonical store.
 
 ## U-003: Search Engine (FTS5 default, trait-abstracted)
 
-Status: Backlog  
+Status: Done 
 Priority: P0  
 Depends On: U-002  
 Blocks: U-004, U-005, U-006
@@ -387,58 +387,58 @@ pub struct Hit {
 
 Rules:
 
-- [ ] Engines return relevance-ranked candidates only.
-- [ ] Recency and importance re-ranking lives in a shared layer above the engine.
-- [ ] Metadata filtering by namespace/type is applied in the query.
-- [ ] No `commit()` or `refresh()` in the trait; engines manage their own durability.
-- [ ] The trait must not expose FTS5-specific or Tantivy-specific options.
+- [x] Engines return relevance-ranked candidates only.
+- [x] Recency and importance re-ranking lives in a shared layer above the engine.
+- [x] Metadata filtering by namespace/type is applied in the query.
+- [x] No `commit()` or `refresh()` in the trait; engines manage their own durability.
+- [x] The trait must not expose FTS5-specific or Tantivy-specific options.
 
 ### FTS5 backend scope
 
-- [ ] Create FTS5 virtual table over memory title/content/entities.
-- [ ] Use native `bm25()` ranking.
-- [ ] Support phrase search.
-- [ ] Support prefix search.
-- [ ] Evaluate trigram tokenizer for partial/fuzzy-ish matching.
-- [ ] Keep FTS5 table transactionally consistent with the canonical store.
-- [ ] No separate index directory.
-- [ ] No separate rebuild machinery required in the common case.
+- [x] Create FTS5 virtual table over memory title/content/entities.
+- [x] Use native `bm25()` ranking.
+- [x] Support phrase search.
+- [x] Support prefix search.
+- [x] Evaluate trigram tokenizer for partial/fuzzy-ish matching.
+- [x] Keep FTS5 table transactionally consistent with the canonical store.
+- [x] No separate index directory.
+- [x] No separate rebuild machinery required in the common case.
 
 ### Re-ranking layer scope
 
-- [ ] Implement a shared re-ranker above the engine.
-- [ ] Apply recency boost.
-- [ ] Apply importance boost.
-- [ ] Produce final ordering returned to callers.
-- [ ] Re-ranker is engine-agnostic.
+- [x] Implement a shared re-ranker above the engine.
+- [x] Apply recency boost.
+- [x] Apply importance boost.
+- [x] Produce final ordering returned to callers.
+- [x] Re-ranker is engine-agnostic.
 
 ### Future Tantivy path
 
-- [ ] Tantivy is not implemented in this use case.
-- [ ] Tantivy may be added later as a second `SearchEngine` implementation.
-- [ ] Adding Tantivy requires benchmark evidence from U-012 first.
+- [x] Tantivy is not implemented in this use case.
+- [x] Tantivy may be added later as a second `SearchEngine` implementation.
+- [x] Adding Tantivy requires benchmark evidence from U-012 first.
 
 ### Tests
 
-- [ ] Exact keyword search works.
-- [ ] Phrase search works.
-- [ ] Prefix search works.
-- [ ] Namespace filter prevents leakage.
-- [ ] Type filter works.
-- [ ] Identifier search works (function names, file names, API routes).
-- [ ] Partial-name search works.
-- [ ] Typo tolerance behavior is measured and documented.
-- [ ] Re-ranker orders newer/higher-importance results higher on close relevance.
-- [ ] FTS5 table stays consistent with canonical store after insert/update/delete.
+- [x] Exact keyword search works.
+- [x] Phrase search works.
+- [x] Prefix search works.
+- [x] Namespace filter prevents leakage.
+- [x] Type filter works.
+- [x] Identifier search works (function names, file names, API routes).
+- [x] Partial-name search works.
+- [x] Typo tolerance behavior is measured and documented.
+- [x] Re-ranker orders newer/higher-importance results higher on close relevance.
+- [x] FTS5 table stays consistent with canonical store after insert/update/delete.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Search benchmarks added.
-- [ ] Trait surface reviewed for minimalism.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Search benchmarks added.
+- [x] Trait surface reviewed for minimalism.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
 
 ---
 
