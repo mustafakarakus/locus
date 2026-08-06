@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/locus-core",
+    "crates/locus-cli",
+    "crates/locusd",
+    "crates/locus-mcp",
+    "crates/locus-testkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+license = "MIT"
+repository = "https://github.com/locus/locus"
+
+[workspace.dependencies]
+locus-core = { path = "crates/locus-core" }
+locus-testkit = { path = "crates/locus-testkit" }
+
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

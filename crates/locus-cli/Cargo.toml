@@ -1,0 +1,19 @@
+[package]
+name = "locus-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Human-facing `locus` command-line interface."
+
+[[bin]]
+name = "locus"
+path = "src/main.rs"
+
+[dependencies]
+locus-core.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true
