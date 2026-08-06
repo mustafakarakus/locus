@@ -8,6 +8,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::context::{self, ContextBriefOptions};
 use crate::memory::{
     normalize_entities, normalize_namespace, normalize_optional, validate_content,
     validate_importance, validate_title, ListFilter, Memory, MemoryType, NewMemory, UpdateMemory,
@@ -254,6 +255,18 @@ impl Store {
         Ok(search::rerank_hits(hits, &signals))
     }
 
+    /// Builds a compressed markdown context brief from search results.
+    pub fn context_brief(&self, query: Query, options: ContextBriefOptions) -> Result<String> {
+        query.validate()?;
+        let hits = self.search(query)?;
+        if hits.is_empty() {
+            return Ok(context::NO_RELEVANT_MEMORY.to_string());
+        }
+
+        let memories = self.load_memories_for_hits(&hits)?;
+        Ok(context::build_context_brief(&memories, options))
+    }
+
     /// Fetches a memory by id.
     pub fn get_memory_by_id(&self, id: &str) -> Result<Memory> {
         if id.trim().is_empty() {
@@ -387,6 +400,35 @@ impl Store {
         }
 
         Ok(signals)
+    }
+
+    fn load_memories_for_hits(&self, hits: &[Hit]) -> Result<Vec<Memory>> {
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.connect_ro()?;
+        let mut stmt = conn.prepare(
+            "
+            SELECT id, namespace, type, title, content, importance, source, created_at, updated_at
+            FROM memories
+            WHERE id = ?
+            ",
+        )?;
+
+        let mut memories = Vec::with_capacity(hits.len());
+        for hit in hits {
+            let row = stmt
+                .query_row(params![hit.id], row_to_memory_base)
+                .optional()?;
+
+            if let Some(mut memory) = row {
+                memory.entities = load_entities(&conn, &memory.id)?;
+                memories.push(memory);
+            }
+        }
+
+        Ok(memories)
     }
 }
 
@@ -1008,6 +1050,19 @@ mod tests {
         deleted_query.namespace = Some("project:auth".to_string());
         let deleted_hits = store.search(deleted_query).expect("search deleted token");
         assert!(deleted_hits.is_empty());
+    }
+
+    #[test]
+    fn empty_search_returns_no_relevant_memory() {
+        let (store, _tmp, _) = test_store();
+        let mut query = Query::new("nothing-here");
+        query.namespace = Some("project:auth".to_string());
+
+        let brief = store
+            .context_brief(query, ContextBriefOptions::default())
+            .expect("context brief should succeed");
+
+        assert_eq!(brief, context::NO_RELEVANT_MEMORY);
     }
 
     #[cfg(unix)]
