@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OpenFlags};
+use serde::{Deserialize, Serialize};
 
 use crate::memory::{normalize_namespace, Memory, MemoryType};
 use crate::{Error, Result};
@@ -43,7 +44,7 @@ impl Query {
 }
 
 /// A search candidate produced by an engine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hit {
     pub id: String,
     pub relevance: f32,
