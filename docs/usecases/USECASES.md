@@ -239,7 +239,7 @@ Do not store dependency or status information in the index table.
 
 ## U-001: Rust Workspace Scaffold
 
-Status: Ready for Review  
+Status: Approved  
 Priority: P0  
 Depends On: None  
 Blocks: All
@@ -278,7 +278,7 @@ Create a Cargo workspace with separate crates for core, CLI, daemon, MCP, and te
 - [x] All scope items complete.
 - [x] All tests green.
 - [x] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] Human approval received.
 
 ---
 

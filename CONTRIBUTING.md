@@ -108,6 +108,7 @@ These come from `docs/TECHSTACK.md` and apply to every PR:
 1. Comment on the relevant use case (or open one) before starting, so work
    isn't duplicated.
 2. Branch name: `u-XXX-short-description` (e.g. `u-006-daemon-ipc`).
+  One branch per use case: do not reuse a branch across multiple use cases.
 3. Keep PRs scoped to one use case. Don't bundle unrelated fixes — open a
    separate PR.
 4. Fill in the PR template (what use case, what scope items are covered,

@@ -45,9 +45,10 @@ You are working on Locus — a local-first, Rust-based long-term memory layer fo
 
 1. Pick the lowest-numbered unblocked use case in `USECASES.md`.
 2. Confirm all its dependencies are `Done` — don't build against an incomplete dependency.
-3. Implement only that use case's scope. Don't expand it.
-4. Write the tests listed in the use case (add more if useful, don't substitute).
-5. Run:
+3. Create a dedicated branch for that use case only, named `u-XXX-short-description` (for example, `u-006-daemon-ipc`).
+4. Implement only that use case's scope. Don't expand it.
+5. Write the tests listed in the use case (add more if useful, don't substitute).
+6. Run:
 
 ```bash
 cargo fmt --all
@@ -55,9 +56,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all
 ```
 
-6. Update the use case's scope checkmarks and docs affected by the change.
-7. Set status to `Ready for Review`.
-8. Stop. Wait for human approval.
+7. Update the use case's scope checkmarks and docs affected by the change.
+8. Set status to `Ready for Review`.
+9. Stop. Wait for human approval.
 
 ## You may not, ever
 
