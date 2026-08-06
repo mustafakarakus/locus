@@ -444,7 +444,7 @@ Rules:
 
 ## U-004: Context Brief Engine
 
-Status: Backlog  
+Status: Done 
 Priority: P0  
 Depends On: U-003  
 Blocks: U-005, U-007
@@ -459,33 +459,33 @@ Convert search results into a short Markdown brief.
 
 ### Scope
 
-- [ ] Implement `ContextBrief` generator.
-- [ ] Group memories by type.
-- [ ] Remove duplicate or near-duplicate entries.
-- [ ] Enforce token budget.
-- [ ] Return `NO_RELEVANT_MEMORY` when no useful result exists.
-- [ ] Keep output deterministic.
-- [ ] Include timestamps only when useful.
-- [ ] Do not output terminal colors.
-- [ ] Do not output raw JSON unless explicitly requested.
+- [x] Implement `ContextBrief` generator.
+- [x] Group memories by type.
+- [x] Remove duplicate or near-duplicate entries.
+- [x] Enforce token budget.
+- [x] Return `NO_RELEVANT_MEMORY` when no useful result exists.
+- [x] Keep output deterministic.
+- [x] Include timestamps only when useful.
+- [x] Do not output terminal colors.
+- [x] Do not output raw JSON unless explicitly requested.
 
 ### Tests
 
-- [ ] Empty search returns `NO_RELEVANT_MEMORY`.
-- [ ] Decisions appear under `## Decisions`.
-- [ ] Preferences appear under `## Preferences`.
-- [ ] Output remains under target token budget.
-- [ ] Duplicate memories are merged.
-- [ ] Output is valid Markdown.
-- [ ] Deterministic output for same input.
+- [x] Empty search returns `NO_RELEVANT_MEMORY`.
+- [x] Decisions appear under `## Decisions`.
+- [x] Preferences appear under `## Preferences`.
+- [x] Output remains under target token budget.
+- [x] Duplicate memories are merged.
+- [x] Output is valid Markdown.
+- [x] Deterministic output for same input.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Example brief documented.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Example brief documented.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
 
 ---
 
