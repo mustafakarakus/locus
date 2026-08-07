@@ -7,6 +7,7 @@
 pub mod conflict;
 pub mod context;
 pub mod error;
+pub mod hooks;
 pub mod init;
 pub mod ipc;
 pub mod logging;

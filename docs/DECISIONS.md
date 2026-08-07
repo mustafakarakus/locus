@@ -109,3 +109,86 @@ minimal tools-only MCP server:
   `{"warnings":[...]}` so agents can surface them (D-6)
 
 Stdout is MCP-only; logs go to stderr. No network, no REST.
+
+### D-10 — U-016 memory visualization channel
+Decisions made while scoping `locus graph` (U-016). This is the first
+documented, explicitly-approved exception to "no REST / no network by
+default": an opt-in, loopback-only HTTP listener used to *visualize* memory.
+It is not a memory-serving API — it never exposes stored content to anything
+but a local browser tab, never accepts writes, and only exists while a viz
+client is connected.
+
+- **Viz is a separate process (`locus-viz`), not a `locusd` feature.**
+  `locus graph` (snapshot) writes a self-contained HTML file — data embedded,
+  JS/CSS inlined, no CDN, works offline, zero network. `locus graph --live`
+  spawns `locus-viz`, which serves that page over loopback HTTP (127.0.0.1
+  only) with SSE push, subscribes to daemon events over the existing IPC
+  transport, binds only while a client is connected, and exits when the tab
+  closes. `locusd` gains no HTTP surface and no idle RSS from the listener.
+
+- **Graph reads must never block or deadlock the memory path.** Graph queries
+  run on their own read-only SQLite connections, never on the shared warm
+  search connection and never through the single-writer queue. WAL snapshot
+  isolation makes readers non-blocking against the single writer, so a graph
+  query structurally cannot stall a `memory_save` or vice versa.
+
+- **Live events are fire-and-forget with a bounded, drop-on-backpressure
+  channel.** The daemon emits `memory_created` / `memory_searched` events on
+  retrieval/save. A slow or hung viz client causes events to be dropped, never
+  queued without bound — event emission can never stall `locusd` request
+  handling. This is the one place an unbounded queue *could* have become a
+  blocking hazard, so it is explicitly bounded.
+
+- **Access tracking is cheap and decoupled.** `access_count` /
+  `last_accessed_at` are bumped on the retrieval path as a non-blocking,
+  batched/fire-and-forget update — never in the latency-critical search
+  response path. "Most visited" is derived from these counters.
+
+- **Rendering never re-routes secrets.** Viz output relies on U-011 redaction
+  at write time; the viz path adds no new formatting or secret-handling path.
+
+### D-11 — U-015 hook adapter approach
+Decisions made while implementing Hook-Based Context Injection. Extends D-5:
+the "host-specific adapters + shared brief path" strategy is now concrete.
+
+- **Adapters are pure translators; injection is one shared function.**
+  Each `HookAdapter` maps a host payload to a normalized `InjectTrigger`
+  (`namespace`, optional `query`, `DefaultQueryStrategy`, `token_budget`).
+  The single internal call `hooks::inject_context` then produces the brief
+  through `store.context_brief` (exact MCP path) or `store.summary_brief`
+  (session-start default-query path). There is exactly one formatting /
+  compression code path — `context::build_context_brief` — for every trigger.
+
+- **`locus hook context` is a stdin-payload reader with graceful failure.**
+  It reads the host's hook JSON from stdin, translates it through the chosen
+  adapter (`--host claude-code` default), and prints the brief to stdout (where
+  the host captures it). On any failure — unparseable payload, unknown host,
+  store error — it prints the diagnostic to stderr, emits `NO_RELEVANT_MEMORY`
+  on stdout, and exits 0, so a hook failure can never block a host lifecycle
+  event (Claude Code treats non-zero exits from some hooks as event-blocking).
+
+- **Default-query strategy defaults to a namespace-scoped summary.**
+  With no query (session-start), injection renders the namespace's recent
+  memories through `build_context_brief` (Decisions category sorts first) under
+  a 200-token budget. Strategy is selectable per invocation via
+  `--strategy summary|none` — a project picks its own setting in its hook
+  config, which is how per-namespace configurability is realized without a new
+  config-file subsystem. `none` means inject nothing until the first real
+  query. Summary is always scoped to a concrete namespace (`None` → `global`);
+  it never lists across namespaces.
+
+- **Hook injection reads the database directly, not through the daemon.**
+  `hook context` opens the store itself (read-only operations only) via the
+  same `Paths::db_file()` that `locusd` uses, so it honors `LOCUS_HOME` and is
+  consistent with the daemon's database file. This keeps the path fast (no
+  daemon spawn, no IPC round-trip) and read-only (no writer involvement); it is
+  still the same `context_brief` generator the daemon uses for MCP.
+
+- **`locus init` now also patches project docs.** A separate, marker-delimited
+  doc protocol block (`DOC_PROTOCOL_START_MARKER`) is appended to
+  `README.md`, `CONTRIBUTING.md`, and `AGENTS.md` **only when present** (never
+  created). It is the passive fallback tier for agents without a hook system
+  and always includes both the CLI form (`locus context "<task>"`) and the MCP
+  tool form (`memory_search`).
+
+
