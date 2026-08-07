@@ -6,9 +6,10 @@ use interprocess::local_socket::prelude::*;
 
 use locus_core::context::ContextBriefOptions;
 use locus_core::ipc::protocol::{
-    command, error_code, ContextRequest, ContextResponse, ForgetRequest, ForgetResponse,
-    PingResponse, ReindexResponse, RememberRequest, RememberResponse, Request, Response,
-    SearchRequest, SearchResponse, MAX_MESSAGE_BYTES, PROTOCOL_VERSION,
+    command, error_code, ConflictsRequest, ConflictsResponse, ContextRequest, ContextResponse,
+    ForgetRequest, ForgetResponse, PingResponse, ReindexResponse, RememberRequest,
+    RememberResponse, Request, Response, SearchRequest, SearchResponse, MAX_MESSAGE_BYTES,
+    PROTOCOL_VERSION,
 };
 use locus_core::ipc::wire::{read_message, write_message, ReadOutcome};
 use locus_core::memory::{MemoryType, NewMemory};
@@ -106,6 +107,7 @@ fn route(shared: &Shared, request: &Request) -> Response {
         command::REMEMBER => handle_remember(shared, request),
         command::FORGET => handle_forget(shared, request),
         command::REINDEX => handle_reindex(shared, request),
+        command::CONFLICTS => handle_conflicts(shared, request),
         command::STOP => {
             shared.log().info("stop requested by client");
             shared.request_shutdown();
@@ -224,6 +226,24 @@ fn handle_reindex(shared: &Shared, request: &Request) -> Response {
     match shared.writer().submit(WriterOp::Reindex) {
         Ok(WriterOk::Reindexed(reindexed)) => ok(request, &ReindexResponse { reindexed }),
         Ok(_) => internal(shared, request, "unexpected writer result"),
+        Err(err) => error_response(shared, request, err),
+    }
+}
+
+fn handle_conflicts(shared: &Shared, request: &Request) -> Response {
+    let payload: ConflictsRequest = match parse_payload(request) {
+        Ok(payload) => payload,
+        Err(response) => return *response,
+    };
+
+    match shared.store().list_conflicts(payload.namespace) {
+        Ok(conflicts) => ok(
+            request,
+            &ConflictsResponse {
+                count: conflicts.len(),
+                conflicts,
+            },
+        ),
         Err(err) => error_response(shared, request, err),
     }
 }

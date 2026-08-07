@@ -8,6 +8,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::conflict::{self, ConflictRecord};
 use crate::context::{self, ContextBriefOptions};
 use crate::memory::{
     normalize_entities, normalize_namespace, normalize_optional, validate_content,
@@ -97,6 +98,25 @@ FROM memories m
 WHERE NOT EXISTS (
     SELECT 1 FROM memory_fts f WHERE f.memory_id = m.id
 );
+",
+    ),
+    (
+        3,
+        "conflict_tracking",
+        "
+CREATE TABLE IF NOT EXISTS memory_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id_a TEXT NOT NULL,
+    memory_id_b TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    detected_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    FOREIGN KEY (memory_id_a) REFERENCES memories(id) ON DELETE CASCADE,
+    FOREIGN KEY (memory_id_b) REFERENCES memories(id) ON DELETE CASCADE,
+    UNIQUE (memory_id_a, memory_id_b)
+);
+CREATE INDEX IF NOT EXISTS idx_conflicts_memory_a ON memory_conflicts(memory_id_a);
+CREATE INDEX IF NOT EXISTS idx_conflicts_memory_b ON memory_conflicts(memory_id_b);
 ",
     ),
 ];
@@ -409,6 +429,128 @@ impl Store {
         Ok(usize::try_from(count).unwrap_or(0))
     }
 
+    /// Detects conflicts between `memory` and existing memories, persisting any
+    /// new conflict records found.
+    ///
+    /// Only types in [`conflict::CONFLICT_ELIGIBLE_TYPES`] are examined. Two
+    /// memories are treated as a potential conflict when they share the same
+    /// namespace and type and their titles overlap on at least
+    /// [`conflict::MIN_SHARED_WORDS`] significant keywords.
+    ///
+    /// Errors are returned but are treated as best-effort by callers (e.g. the
+    /// writer thread) — a failure here must never corrupt or lose canonical
+    /// memory data.
+    pub fn detect_and_store_conflicts(&self, memory: &Memory) -> Result<()> {
+        if !conflict::is_conflict_eligible(memory.memory_type) {
+            return Ok(());
+        }
+
+        let words = conflict::significant_words(&memory.title);
+        if words.len() < conflict::MIN_SHARED_WORDS {
+            return Ok(());
+        }
+
+        // Collect candidates from the same namespace + type using a RO connection.
+        let candidates: Vec<(String, String)> = {
+            let conn = self.connect_ro()?;
+            let mut stmt = conn.prepare(
+                "SELECT id, title FROM memories WHERE namespace = ? AND type = ? AND id != ?",
+            )?;
+            let result = stmt
+                .query_map(
+                    params![memory.namespace, memory.memory_type.as_str(), memory.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            result
+        };
+
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        let now = now_unix();
+        let conn = self.connect_rw()?;
+
+        for (other_id, other_title) in candidates {
+            let shared_words: Vec<String> = words
+                .iter()
+                .filter(|w| conflict::significant_words(&other_title).contains(w))
+                .cloned()
+                .collect();
+
+            if shared_words.len() < conflict::MIN_SHARED_WORDS {
+                continue;
+            }
+
+            // Canonical ordering: lexicographically earlier id is always `a`.
+            let (id_a, id_b) = if memory.id < other_id {
+                (memory.id.as_str(), other_id.as_str())
+            } else {
+                (other_id.as_str(), memory.id.as_str())
+            };
+
+            let reason = format!(
+                "similar titles: shared keywords [{}]",
+                shared_words.join(", ")
+            );
+
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_conflicts
+                 (memory_id_a, memory_id_b, reason, detected_at)
+                 VALUES (?, ?, ?, ?)",
+                params![id_a, id_b, reason, now],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Lists conflict records, optionally filtered to a single namespace.
+    ///
+    /// When `namespace` is provided the filter is applied to `memory_id_a`'s
+    /// namespace. Results are ordered newest-detected first.
+    pub fn list_conflicts(&self, namespace: Option<String>) -> Result<Vec<ConflictRecord>> {
+        let conn = self.connect_ro()?;
+
+        if let Some(ns) = namespace {
+            let ns = normalize_namespace(Some(ns));
+            let mut stmt = conn.prepare(
+                "SELECT mc.id, mc.memory_id_a, mc.memory_id_b, mc.reason,
+                        mc.detected_at, mc.resolved_at
+                 FROM memory_conflicts mc
+                 INNER JOIN memories m ON m.id = mc.memory_id_a
+                 WHERE m.namespace = ?
+                 ORDER BY mc.detected_at DESC",
+            )?;
+            let records = stmt
+                .query_map(params![ns], row_to_conflict)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(records)
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, memory_id_a, memory_id_b, reason, detected_at, resolved_at
+                 FROM memory_conflicts
+                 ORDER BY detected_at DESC",
+            )?;
+            let records = stmt
+                .query_map([], row_to_conflict)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(records)
+        }
+    }
+
+    /// Returns the number of currently unresolved conflict records.
+    pub fn conflict_count(&self) -> Result<usize> {
+        let conn = self.connect_ro()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory_conflicts WHERE resolved_at IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
     fn connect_rw(&self) -> Result<Connection> {
         let conn = Connection::open(&self.db_path)?;
         apply_pragmas(&conn)?;
@@ -617,6 +759,19 @@ fn load_entities(conn: &Connection, memory_id: &str) -> Result<Vec<String>> {
         .query_map(params![memory_id], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+fn row_to_conflict(
+    row: &rusqlite::Row<'_>,
+) -> std::result::Result<ConflictRecord, rusqlite::Error> {
+    Ok(ConflictRecord {
+        id: row.get(0)?,
+        memory_id_a: row.get(1)?,
+        memory_id_b: row.get(2)?,
+        reason: row.get(3)?,
+        detected_at: row.get(4)?,
+        resolved_at: row.get(5)?,
+    })
 }
 
 fn row_to_memory_base(row: &rusqlite::Row<'_>) -> std::result::Result<Memory, rusqlite::Error> {
@@ -1135,5 +1290,268 @@ mod tests {
         let mode = metadata.permissions().mode();
 
         assert_eq!(mode & 0o002, 0, "db file must not be world-writable");
+    }
+
+    // ----- Conflict detection tests -----------------------------------------
+
+    #[test]
+    fn conflicting_decisions_are_detected() {
+        let (store, _tmp, _) = test_store();
+
+        let id_a = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use Postgres database for auth storage".to_string(),
+                content: "Auth data lives in Postgres".to_string(),
+                entities: vec![],
+                importance: 70,
+                source: None,
+            })
+            .expect("insert a");
+
+        let id_b = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use MySQL database for auth storage".to_string(),
+                content: "Auth data lives in MySQL".to_string(),
+                entities: vec![],
+                importance: 70,
+                source: None,
+            })
+            .expect("insert b");
+
+        let memory_b = store.get_memory_by_id(&id_b).expect("get b");
+        store
+            .detect_and_store_conflicts(&memory_b)
+            .expect("detect conflicts");
+
+        let conflicts = store.list_conflicts(None).expect("list conflicts");
+        assert!(
+            !conflicts.is_empty(),
+            "expected a conflict between the two database decisions"
+        );
+        let c = &conflicts[0];
+        assert!(
+            (c.memory_id_a == id_a && c.memory_id_b == id_b)
+                || (c.memory_id_a == id_b && c.memory_id_b == id_a),
+            "conflict should reference both inserted memories"
+        );
+        assert!(
+            c.reason.contains("database")
+                || c.reason.contains("auth")
+                || c.reason.contains("storage"),
+            "reason should mention the shared keywords: {}",
+            c.reason
+        );
+    }
+
+    #[test]
+    fn non_conflicting_decisions_are_not_detected() {
+        let (store, _tmp, _) = test_store();
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use Postgres for user data".to_string(),
+                content: "Users stored in Postgres".to_string(),
+                entities: vec![],
+                importance: 70,
+                source: None,
+            })
+            .expect("insert a");
+
+        let id_b = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Deploy with Docker Compose".to_string(),
+                content: "Use Docker Compose for local dev".to_string(),
+                entities: vec![],
+                importance: 50,
+                source: None,
+            })
+            .expect("insert b");
+
+        let memory_b = store.get_memory_by_id(&id_b).expect("get b");
+        store
+            .detect_and_store_conflicts(&memory_b)
+            .expect("detect conflicts");
+
+        let conflicts = store.list_conflicts(None).expect("list conflicts");
+        assert!(
+            conflicts.is_empty(),
+            "unrelated decisions should not conflict"
+        );
+    }
+
+    #[test]
+    fn conflict_detection_skips_non_eligible_types() {
+        let (store, _tmp, _) = test_store();
+
+        // Two tasks with very similar titles — should NOT be flagged.
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Task,
+                title: "Update authentication token logic handler".to_string(),
+                content: "needs updating".to_string(),
+                entities: vec![],
+                importance: 50,
+                source: None,
+            })
+            .expect("insert a");
+
+        let id_b = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Task,
+                title: "Refactor authentication token logic handler".to_string(),
+                content: "needs refactoring".to_string(),
+                entities: vec![],
+                importance: 50,
+                source: None,
+            })
+            .expect("insert b");
+
+        let memory_b = store.get_memory_by_id(&id_b).expect("get b");
+        store
+            .detect_and_store_conflicts(&memory_b)
+            .expect("detect conflicts");
+
+        let conflicts = store.list_conflicts(None).expect("list conflicts");
+        assert!(
+            conflicts.is_empty(),
+            "task type should not trigger conflict detection"
+        );
+    }
+
+    #[test]
+    fn conflicts_do_not_cross_namespace_boundaries() {
+        let (store, _tmp, _) = test_store();
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use Postgres database for auth storage".to_string(),
+                content: "auth uses postgres".to_string(),
+                entities: vec![],
+                importance: 70,
+                source: None,
+            })
+            .expect("insert a");
+
+        let id_b = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:payments".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use Postgres database for auth storage".to_string(),
+                content: "payments uses postgres".to_string(),
+                entities: vec![],
+                importance: 70,
+                source: None,
+            })
+            .expect("insert b");
+
+        let memory_b = store.get_memory_by_id(&id_b).expect("get b");
+        store
+            .detect_and_store_conflicts(&memory_b)
+            .expect("detect conflicts");
+
+        let conflicts = store.list_conflicts(None).expect("list conflicts");
+        assert!(
+            conflicts.is_empty(),
+            "memories in different namespaces must not conflict"
+        );
+    }
+
+    #[test]
+    fn namespace_filter_on_list_conflicts_works() {
+        let (store, _tmp, _) = test_store();
+
+        // Create a conflict in project:auth
+        let id_a = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use Postgres database for auth storage".to_string(),
+                content: "auth uses postgres".to_string(),
+                entities: vec![],
+                importance: 70,
+                source: None,
+            })
+            .expect("insert a");
+        let id_b = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use MySQL database for auth storage".to_string(),
+                content: "auth uses mysql".to_string(),
+                entities: vec![],
+                importance: 70,
+                source: None,
+            })
+            .expect("insert b");
+        let memory_b = store.get_memory_by_id(&id_b).expect("get b");
+        store
+            .detect_and_store_conflicts(&memory_b)
+            .expect("detect conflicts");
+
+        // Filter to project:auth — should see the conflict.
+        let auth_conflicts = store
+            .list_conflicts(Some("project:auth".to_string()))
+            .expect("list auth conflicts");
+        assert!(!auth_conflicts.is_empty());
+
+        // Filter to project:payments — should see nothing.
+        let payments_conflicts = store
+            .list_conflicts(Some("project:payments".to_string()))
+            .expect("list payments conflicts");
+        assert!(payments_conflicts.is_empty());
+
+        // No filter — same conflict.
+        let all_conflicts = store.list_conflicts(None).expect("list all conflicts");
+        assert_eq!(all_conflicts.len(), auth_conflicts.len());
+
+        let _ = (id_a, id_b);
+    }
+
+    #[test]
+    fn conflict_count_returns_unresolved_only() {
+        let (store, _tmp, _) = test_store();
+
+        let id_a = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use Postgres database for auth storage".to_string(),
+                content: "auth uses postgres".to_string(),
+                entities: vec![],
+                importance: 70,
+                source: None,
+            })
+            .expect("insert a");
+        let id_b = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use MySQL database for auth storage".to_string(),
+                content: "auth uses mysql".to_string(),
+                entities: vec![],
+                importance: 70,
+                source: None,
+            })
+            .expect("insert b");
+
+        let memory_b = store.get_memory_by_id(&id_b).expect("get b");
+        store.detect_and_store_conflicts(&memory_b).expect("detect");
+
+        let count = store.conflict_count().expect("count");
+        assert_eq!(count, 1);
+
+        let _ = (id_a, id_b);
     }
 }

@@ -4,6 +4,7 @@
 //! This crate is scaffolding at U-001; storage, search, and the context brief
 //! engine are implemented in later use cases (U-002+).
 
+pub mod conflict;
 pub mod context;
 pub mod error;
 pub mod init;
