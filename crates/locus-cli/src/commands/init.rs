@@ -133,6 +133,7 @@ fn print_json_plan(
         .rule_changes
         .iter()
         .chain(plan.mcp_changes.iter())
+        .chain(plan.doc_changes.iter())
         .map(|c| {
             json!({
                 "path": c.path,

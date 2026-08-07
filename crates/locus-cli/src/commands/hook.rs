@@ -1,14 +1,18 @@
-//! `locus hook` — install/uninstall Git hook ingestion (U-009).
+//! `locus hook` — Git hook ingestion (U-009) and lifecycle context injection (U-015).
 
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
+use locus_core::context::NO_RELEVANT_MEMORY;
+use locus_core::hooks::{adapter_for, inject_context, DefaultQueryStrategy, InjectTrigger};
 use locus_core::ipc::paths::Paths;
 use locus_core::ipc::protocol::{command, RememberRequest, RememberResponse, Request};
 use locus_core::ipc::DaemonClient;
+use locus_core::store::Store;
 
 const START_MARKER: &str = "# LOCUS:POST_COMMIT:START";
 const END_MARKER: &str = "# LOCUS:POST_COMMIT:END";
@@ -46,6 +50,27 @@ enum HookAction {
         #[arg(long)]
         commit: Option<String>,
     },
+    /// Inject a context brief for a host lifecycle hook event (U-015)
+    Context {
+        /// Host adapter to use (default: claude-code)
+        #[arg(long, default_value = "claude-code")]
+        host: String,
+        /// Override the namespace (default: derived from the hook payload `cwd`)
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Override the query; bypasses the adapter-derived query
+        #[arg(long)]
+        query: Option<String>,
+        /// Default-query strategy when there is no query: summary | none
+        #[arg(long, default_value = "summary")]
+        strategy: String,
+        /// Token budget for the brief (default: 200)
+        #[arg(long, default_value = "200")]
+        token_budget: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl HookCmd {
@@ -54,6 +79,14 @@ impl HookCmd {
             HookAction::Install { path } => install(path),
             HookAction::Uninstall { path } => uninstall(path),
             HookAction::RunPostCommit { path, commit } => run_post_commit(path, commit),
+            HookAction::Context {
+                host,
+                namespace,
+                query,
+                strategy,
+                token_budget,
+                json,
+            } => run_context(host, namespace, query, strategy, token_budget, json),
         }
     }
 }
@@ -210,6 +243,103 @@ fn run_post_commit(path: Option<PathBuf>, commit: Option<String>) -> Result<()> 
     let _decoded: RememberResponse = serde_json::from_value(payload)?;
 
     Ok(())
+}
+
+/// Run pre-reasoning context injection for a host lifecycle hook event.
+///
+/// Reads the host's hook payload from stdin, translates it through the chosen
+/// adapter, and prints a compressed context brief. This is a fast, read-only
+/// path. On any failure it degrades gracefully: the error goes to stderr and
+/// `NO_RELEVANT_MEMORY` is printed so the host event is never blocked.
+fn run_context(
+    host: String,
+    namespace_override: Option<String>,
+    query_override: Option<String>,
+    strategy: String,
+    token_budget: usize,
+    json: bool,
+) -> Result<()> {
+    let trigger = match build_trigger(
+        host,
+        namespace_override,
+        query_override,
+        strategy,
+        token_budget,
+    ) {
+        Ok(trigger) => trigger,
+        Err(err) => {
+            eprintln!("locus hook context: {err}");
+            print_brief(NO_RELEVANT_MEMORY, json);
+            return Ok(());
+        }
+    };
+
+    let store = match Paths::resolve().and_then(|paths| Store::open_at(paths.db_file())) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("locus hook context: {err}");
+            print_brief(NO_RELEVANT_MEMORY, json);
+            return Ok(());
+        }
+    };
+
+    match inject_context(&store, &trigger) {
+        Ok(brief) => print_brief(&brief, json),
+        Err(err) => {
+            eprintln!("locus hook context: {err}");
+            print_brief(NO_RELEVANT_MEMORY, json);
+        }
+    }
+
+    Ok(())
+}
+
+fn build_trigger(
+    host: String,
+    namespace_override: Option<String>,
+    query_override: Option<String>,
+    strategy: String,
+    token_budget: usize,
+) -> Result<InjectTrigger> {
+    let namespace = namespace_override.filter(|ns| !ns.trim().is_empty());
+
+    if let Some(query) = query_override {
+        let query = query.trim().to_string();
+        if query.is_empty() {
+            bail!("--query must not be empty");
+        }
+        return Ok(InjectTrigger {
+            namespace,
+            query: Some(query),
+            strategy: DefaultQueryStrategy::Summary,
+            token_budget,
+        });
+    }
+
+    let mut payload = String::new();
+    io::stdin()
+        .read_to_string(&mut payload)
+        .context("failed to read hook payload from stdin")?;
+
+    let adapter = adapter_for(&host).map_err(anyhow::Error::from)?;
+    let mut trigger = adapter
+        .translate(payload.trim())
+        .map_err(anyhow::Error::from)?;
+    trigger.namespace = namespace.or(trigger.namespace);
+    trigger.strategy = DefaultQueryStrategy::parse(&strategy)?;
+    trigger.token_budget = token_budget;
+    Ok(trigger)
+}
+
+fn print_brief(brief: &str, json: bool) {
+    if json {
+        println!(
+            "{{\"status\":\"ok\",\"brief\":{}}}",
+            serde_json::to_string(brief).expect("serializing brief")
+        );
+    } else {
+        println!("{brief}");
+    }
 }
 
 #[derive(Debug)]

@@ -287,6 +287,30 @@ impl Store {
         Ok(context::build_context_brief(&memories, options))
     }
 
+    /// Builds a namespace-scoped summary brief without a user query.
+    ///
+    /// Used by the default-query strategy for session-start hook injection
+    /// (U-015). Always scopes to a concrete namespace — `None` maps to
+    /// `global` — so a summary never leaks across namespaces. Uses the same
+    /// shared [`context::build_context_brief`] engine as query-driven briefs.
+    pub fn summary_brief(
+        &self,
+        namespace: Option<&str>,
+        options: ContextBriefOptions,
+    ) -> Result<String> {
+        let namespace = namespace
+            .map(str::trim)
+            .filter(|ns| !ns.is_empty())
+            .unwrap_or("global");
+        let filter = ListFilter {
+            namespace: Some(namespace.to_string()),
+            memory_type: None,
+            limit: Some(20),
+        };
+        let memories = self.list_memories(filter)?;
+        Ok(context::build_context_brief(&memories, options))
+    }
+
     /// Fetches a memory by id.
     pub fn get_memory_by_id(&self, id: &str) -> Result<Memory> {
         if id.trim().is_empty() {

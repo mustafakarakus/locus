@@ -219,6 +219,7 @@ Canonical status, priority, dependencies, and blocks live inside each use case.
 | U-013 | End-to-End Cross-Agent Verification |
 | U-014 | Packaging and Release |
 | U-015 | Hook-Based Context Injection |
+| U-016 | Memory Visualization (Graph) |
 
 ---
 
@@ -1629,7 +1630,7 @@ Package Locus as a native binary.
 
 ## U-015: Hook-Based Context Injection
 
-Status: Backlog  
+Status: Done  
 Priority: P0  
 Depends On: U-004, U-006, U-007  
 Blocks: U-013
@@ -1652,58 +1653,71 @@ same `ContextBrief` generation path as the MCP interface.
 
 ### Key decisions
 
-- [ ] Host-specific adapters, not one generic hooks API.
-- [ ] Shared `ContextBrief` generation path with MCP.
-- [ ] Explicit default-query strategy for session-start injection.
-- [ ] Read-only, fast path with a small token budget.
+- [x] Host-specific adapters, not one generic hooks API.
+- [x] Shared `ContextBrief` generation path with MCP.
+- [x] Explicit default-query strategy for session-start injection.
+- [x] Read-only, fast path with a small token budget.
 
 ### Adapter layer scope
 
-- [ ] Define a `HookAdapter` trait.
-- [ ] Implement `ClaudeCodeAdapter` first.
-- [ ] Each adapter maps its host's lifecycle events and payload shapes to a
+- [x] Define a `HookAdapter` trait.
+- [x] Implement `ClaudeCodeAdapter` first.
+- [x] Each adapter maps its host's lifecycle events and payload shapes to a
       single internal call: inject context for a trigger.
-- [ ] Do not imply a single universal hooks API across hosts.
-- [ ] Additional host adapters are separate, explicit work.
+- [x] Do not imply a single universal hooks API across hosts.
+- [x] Additional host adapters are separate, explicit work.
 
 ### Default-query strategy scope
 
 Session-start hooks have no user query yet. Decide and implement one strategy:
 
-- [ ] Inject a namespace-scoped project summary plus top decisions, OR
+- [x] Inject a namespace-scoped project summary plus top decisions, OR
 - [ ] Inject nothing until the first real query.
 
 Default choice: namespace-scoped summary + top decisions, under a small token
 budget.
 
-- [ ] Strategy is configurable per project namespace.
-- [ ] Output stays under a small token budget (default 200 tokens).
-- [ ] Uses the shared `ContextBrief` engine.
+- [x] Strategy is configurable per project namespace.
+- [x] Output stays under a small token budget (default 200 tokens).
+- [x] Uses the shared `ContextBrief` engine.
 
 ### Shared brief path scope
 
-- [ ] Hook injection and MCP `memory_search`/context use the same generator.
-- [ ] Single formatting/compression code path.
-- [ ] No divergent brief formats between triggers.
+- [x] Hook injection and MCP `memory_search`/context use the same generator.
+- [x] Single formatting/compression code path.
+- [x] No divergent brief formats between triggers.
 
 ### Scope
 
-- [ ] Add `locus hook context` command for generic pre-reasoning injection.
-- [ ] Integrate with Claude Code lifecycle hooks (session-start / pre-tool).
-- [ ] Return compressed Markdown brief.
-- [ ] Return `NO_RELEVANT_MEMORY` when nothing applies.
-- [ ] Read-only; hooks never write memory.
-- [ ] Fast path; no index rebuild or heavy work on injection.
+- [x] Add `locus hook context` command for generic pre-reasoning injection.
+- [x] Integrate with Claude Code lifecycle hooks (session-start / pre-tool).
+- [x] Return compressed Markdown brief.
+- [x] Return `NO_RELEVANT_MEMORY` when nothing applies.
+- [x] Read-only; hooks never write memory.
+- [x] Fast path; no index rebuild or heavy work on injection.
+- [x] Extend `locus init` to write a delimited `Locus Memory Protocol` block
+      into `README.md`, `CONTRIBUTING.md`, and `AGENTS.md` when present. The
+      block instructs agents to run `locus context "<task>"` (CLI) or call
+      `memory_search` (MCP) before making changes. It must be idempotent,
+      clearly delimited so it can be detected and not duplicated, and must
+      include both the CLI form and the MCP tool form so any agent can use
+      whichever path is available to it. This is the passive fallback tier for
+      agents that have no lifecycle hook system.
 
 ### Tests
 
-- [ ] Claude Code adapter translates lifecycle events correctly.
-- [ ] Session-start injection returns a namespace-scoped brief.
-- [ ] Hook output matches MCP brief output for the same query.
-- [ ] Hook injection stays under token budget.
-- [ ] Hook injection is read-only.
-- [ ] Unrelated session returns `NO_RELEVANT_MEMORY`.
-- [ ] Adapter failure degrades gracefully without blocking the host.
+- [x] Claude Code adapter translates lifecycle events correctly.
+- [x] Session-start injection returns a namespace-scoped brief.
+- [x] Hook output matches MCP brief output for the same query.
+- [x] Hook injection stays under token budget.
+- [x] Hook injection is read-only.
+- [x] Unrelated session returns `NO_RELEVANT_MEMORY`.
+- [x] Adapter failure degrades gracefully without blocking the host.
+- [x] Doc protocol block is written to `README.md` when present.
+- [x] Doc protocol block is written to `CONTRIBUTING.md` when present.
+- [x] Doc protocol block is written to `AGENTS.md` when present.
+- [x] Repeated `locus init` does not duplicate the doc protocol block.
+- [x] Doc protocol block contains both the CLI form and the MCP tool form.
 
 ### Out of Scope
 
@@ -1713,10 +1727,164 @@ budget.
 
 ### Definition of Done
 
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Adapter approach documented.
+- [x] Default-query strategy documented.
+- [x] Shared brief path verified.
+- [x] Doc protocol block format documented.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
+
+---
+
+## U-016: Memory Visualization (Graph)
+
+Status: Backlog  
+Priority: P2  
+Depends On: U-002, U-003, U-006, U-011  
+Blocks: None
+
+### Problem
+
+Memory is invisible. Users can store and retrieve decisions, constraints, bugs,
+and context, but there is no way to *see* what Locus knows — how memories
+relate, which ones are being used most, which are stale, or what is happening
+live while an agent works.
+
+### Solution
+
+Add an on-demand local visualization: `locus graph` renders memories as an
+interactive node graph where nodes are memories and edges are shared entities
+or explicit links. Node size reflects retrieval frequency, node color reflects
+recency.
+
+Two modes:
+
+- **Snapshot:** `locus graph` writes a fully self-contained HTML file (data
+  embedded, all JS/CSS inlined — no CDN, works offline) and opens it. Regenerate
+  to refresh.
+- **Live:** `locus graph --live` spawns a separate `locus-viz` process that
+  serves the page over loopback HTTP and pushes events (`memory_created`,
+  `memory_searched`) over SSE so an already-open graph updates in real time.
+
+The critical constraint: **reading data for the graph must never block or
+deadlock the memory path** (search, save, context). Graph reads run on separate
+read-only SQLite connections; live events are fire-and-forget on a bounded,
+drop-on-backpressure channel; a slow or hung viz client must not stall
+`locusd`.
+
+### Access tracking scope
+
+- [ ] Add `access_count` and `last_accessed_at` to the memories schema (or a
+      per-memory stats table).
+- [ ] Bump `access_count` on the retrieval path whenever a memory is surfaced
+      to a caller (search/context).
+- [ ] The bump must be cheap and non-blocking (fire-and-forget/batched), never
+      in the critical latency path of the search response.
+- [ ] Expose access stats through a read API so the graph can render
+      "most visited" and "recently used" without a full scan.
+- [ ] Access stats must respect namespace isolation.
+
+### Graph data scope
+
+- [ ] Build node set from memories.
+- [ ] Build edge set from shared entities and explicit links (no graph
+      database; relationships come from SQLite joins, per TECHSTACK).
+- [ ] Support namespace scoping for the graph.
+- [ ] Support `--expand <id>` to focus one memory and its immediate context.
+- [ ] Cap graph payloads (max nodes, max depth) so queries stay bounded.
+- [ ] Graph queries run on their own read-only SQLite connections, never on the
+      shared warm search connection and never through the single-writer queue.
+- [ ] Graph queries must not acquire long-lived locks; WAL snapshot isolation
+      means readers never block the single writer.
+
+### Live event stream scope
+
+- [ ] Daemon emits events on retrieval and save (`memory_created`,
+      `memory_searched`, `memory_used`).
+- [ ] Events go to a bounded broadcast channel; if a subscriber is slow or
+      absent, events are dropped, never queued without bound.
+- [ ] Event emission must not block the daemon's request handling.
+- [ ] `locus-viz` subscribes to the daemon event stream over the existing IPC
+      transport.
+
+### `locus graph` CLI scope
+
+- [ ] Implement `locus graph` (snapshot mode).
+- [ ] Implement `locus graph --live` (spawns `locus-viz`, opens browser).
+- [ ] Implement `locus graph --namespace <ns>`.
+- [ ] Implement `locus graph --expand <id>`.
+- [ ] Write the self-contained HTML page.
+- [ ] Inline or vendor all JS/CSS; no CDN references; page must work offline.
+- [ ] Do not serve the page over HTTP in snapshot mode.
+- [ ] Do not introduce network calls in snapshot mode.
+
+### `locus-viz` scope
+
+- [ ] Add `locus-viz` binary (separate crate or binary in the workspace).
+- [ ] Subscribes to daemon events over existing IPC.
+- [ ] Serves the HTML page over loopback HTTP (127.0.0.1 only) with SSE push.
+- [ ] Binds only on demand, while a viz client is connected.
+- [ ] Exits when the tab closes / no clients remain.
+- [ ] Must never run or linger when `locus graph` is not in live mode.
+- [ ] Rendering page live updates: new node fades in, visit counter ticks,
+      usage pulses.
+- [ ] No telemetry, no analytics, no cloud calls from the page or server.
+
+### Security scope
+
+- [ ] Loopback-only listener; never binds a public interface.
+- [ ] Page output must not contain secrets (relies on U-011 redaction, which
+      happens at write time).
+- [ ] Live mode only exists while explicitly requested; nothing runs by
+      default.
+- [ ] No REST API for memory; the viz HTTP listener serves the page and events
+      only, never write operations.
+
+### Non-blocking guarantees
+
+- [ ] Concurrent search/save continues with p95 within budget while a graph
+      read is running (test).
+- [ ] A hung `locus-viz` client does not stall daemon requests (test).
+- [ ] Graph reads never deadlock against a concurrent write (test).
+- [ ] Event stream with no subscriber does not affect daemon performance
+      (test).
+
+### Tests
+
+- [ ] `access_count` increments when a memory is retrieved.
+- [ ] Access bump does not measurably delay the search response.
+- [ ] Snapshot mode writes a valid, self-contained HTML file with embedded data.
+- [ ] Snapshot mode makes no network calls.
+- [ ] Graph node set matches the memories in scope (namespace filter).
+- [ ] Graph edge set reflects shared entities.
+- [ ] `--expand <id>` shows the memory and its immediate links.
+- [ ] Live mode receives `memory_created` and renders a new node.
+- [ ] Live mode receives `memory_searched` and updates the visited counter.
+- [ ] Live SSE stream degrades gracefully when the viz client disconnects.
+- [ ] Daemon keeps serving search/save with p95 within budget during a
+      long-running graph query.
+- [ ] A hung viz client does not block daemon shutdown or requests.
+- [ ] Graph query does not deadlock a concurrent save.
+- [ ] Viz listener binds only to loopback.
+- [ ] Page loads offline (no external requests).
+- [ ] Secrets are not present in the rendered graph.
+
+### Out of Scope
+
+- Hosted/shared/cloud dashboard.
+- Editing memory from the graph.
+- A graph database backend (Neo4j etc.); SQLite relationships remain the source.
+- Real-time multi-user collaboration.
+- Embedding the visualization inside `locusd` (stays a separate process).
+
+### Definition of Done
+
 - [ ] All scope items complete.
 - [ ] All tests green.
-- [ ] Adapter approach documented.
-- [ ] Default-query strategy documented.
-- [ ] Shared brief path verified.
+- [ ] Non-blocking guarantees verified.
+- [ ] Live event protocol documented.
+- [ ] Graph data model documented.
 - [ ] Status changed to `Ready for Review`.
 - [ ] Human approval received.

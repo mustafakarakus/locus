@@ -1,22 +1,27 @@
-//! Project initialization: agent rules + MCP config (`locus init`).
+//! Project initialization: agent rules + MCP config + doc protocol (`locus init`).
 //!
 //! Installs a visible **Locus Memory Protocol** into the rule files AI coding
-//! agents already read (`.cursorrules`, `CLAUDE.md`, `.clinerules`) and merges
-//! a `locus mcp` server entry into project MCP configs.
+//! agents already read (`.cursorrules`, `CLAUDE.md`, `.clinerules`), merges a
+//! `locus mcp` server entry into project MCP configs, and (U-015) appends the
+//! doc-file protocol block to `README.md` / `CONTRIBUTING.md` / `AGENTS.md`
+//! when present — the passive fallback tier for agents without a hook system.
 //!
-//! Design goals (U-008):
+//! Design goals (U-008, U-015):
 //! - idempotent (markers prevent duplicate blocks)
 //! - never silently overwrite user content (append / merge only)
 //! - show a plan / diff before writing; caller confirms
 //! - backup existing files before first modification
 
+mod doc;
 mod mcp;
 mod protocol;
 mod rules;
 
+pub use doc::{detect_doc_files, plan_doc_change, write_doc_change, DOC_FILE_NAMES};
 pub use mcp::{mcp_server_entry, McpConfigTarget};
 pub use protocol::{
-    protocol_block, protocol_is_installed, PROTOCOL_END_MARKER, PROTOCOL_START_MARKER,
+    doc_protocol_block, doc_protocol_is_installed, protocol_block, protocol_is_installed,
+    DOC_PROTOCOL_END_MARKER, DOC_PROTOCOL_START_MARKER, PROTOCOL_END_MARKER, PROTOCOL_START_MARKER,
 };
 pub use rules::{detect_rule_files, RuleFileKind, RULE_FILE_NAMES};
 
@@ -90,6 +95,7 @@ pub struct InitPlan {
     pub project_type: ProjectType,
     pub rule_changes: Vec<PlannedChange>,
     pub mcp_changes: Vec<PlannedChange>,
+    pub doc_changes: Vec<PlannedChange>,
 }
 
 impl InitPlan {
@@ -98,6 +104,7 @@ impl InitPlan {
         self.rule_changes
             .iter()
             .chain(self.mcp_changes.iter())
+            .chain(self.doc_changes.iter())
             .all(|c| c.action == ChangeAction::Skip)
     }
 
@@ -106,6 +113,7 @@ impl InitPlan {
         self.rule_changes
             .iter()
             .chain(self.mcp_changes.iter())
+            .chain(self.doc_changes.iter())
             .filter(|c| c.action != ChangeAction::Skip)
     }
 
@@ -294,12 +302,21 @@ pub fn plan_init(project_root: &Path) -> Result<InitPlan> {
         .map(|target| plan_mcp_change(&root, target))
         .collect::<Result<Vec<_>>>()?;
 
+    // Doc files (U-015): passive fallback for agents without a hook system.
+    // Only patched when present — never created.
+    let doc_block = doc_protocol_block(&project_name);
+    let doc_changes = detect_doc_files(&root)
+        .into_iter()
+        .map(|name| plan_doc_change(&root, name, &doc_block))
+        .collect::<Result<Vec<_>>>()?;
+
     Ok(InitPlan {
         project_root: root,
         project_name,
         project_type,
         rule_changes,
         mcp_changes,
+        doc_changes,
     })
 }
 
@@ -308,16 +325,25 @@ pub fn apply_plan(plan: &InitPlan) -> Result<InitResult> {
     let mut result = InitResult::default();
 
     for change in &plan.rule_changes {
-        apply_one(change, true, &mut result)?;
+        apply_one(change, WriteKind::Rule, &mut result)?;
     }
     for change in &plan.mcp_changes {
-        apply_one(change, false, &mut result)?;
+        apply_one(change, WriteKind::Mcp, &mut result)?;
+    }
+    for change in &plan.doc_changes {
+        apply_one(change, WriteKind::Doc, &mut result)?;
     }
 
     Ok(result)
 }
 
-fn apply_one(change: &PlannedChange, is_rule: bool, result: &mut InitResult) -> Result<()> {
+enum WriteKind {
+    Rule,
+    Mcp,
+    Doc,
+}
+
+fn apply_one(change: &PlannedChange, kind: WriteKind, result: &mut InitResult) -> Result<()> {
     match change.action {
         ChangeAction::Skip => {
             result.skipped.push(change.path.clone());
@@ -328,10 +354,10 @@ fn apply_one(change: &PlannedChange, is_rule: bool, result: &mut InitResult) -> 
                 let backup = backup_file(&change.path)?;
                 result.backups.push(backup);
             }
-            if is_rule {
-                write_rule_change(change)?;
-            } else {
-                write_mcp_change(change)?;
+            match kind {
+                WriteKind::Rule => write_rule_change(change)?,
+                WriteKind::Mcp => write_mcp_change(change)?,
+                WriteKind::Doc => write_doc_change(change)?,
             }
             result.written.push(change.path.clone());
             Ok(())
@@ -378,6 +404,8 @@ fn diff_added_tail(existing: &str, proposed: &str) -> String {
     if let Some(stripped) = proposed.strip_prefix(existing) {
         stripped.trim_start_matches('\n').to_string()
     } else if let Some(idx) = proposed.find(PROTOCOL_START_MARKER) {
+        proposed[idx..].to_string()
+    } else if let Some(idx) = proposed.find(DOC_PROTOCOL_START_MARKER) {
         proposed[idx..].to_string()
     } else {
         // JSON merge: show whole proposed for simplicity.
@@ -634,5 +662,108 @@ mod tests {
         assert!(block.contains("secrets"));
         assert!(block.contains("NO_RELEVANT_MEMORY"));
         assert!(block.contains("project:demo"));
+    }
+
+    #[test]
+    fn doc_block_is_written_to_present_doc_files() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        );
+        write(root, "README.md", "# Demo\n\nIntro.\n");
+        write(root, "CONTRIBUTING.md", "# Contributing\n\nThanks!\n");
+        write(root, "AGENTS.md", "# Agents\n\nFollow the rules.\n");
+
+        let plan = plan_init(root).unwrap();
+        let doc_labels: Vec<_> = plan.doc_changes.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            doc_labels,
+            vec!["README.md", "CONTRIBUTING.md", "AGENTS.md"]
+        );
+        assert!(
+            plan.doc_changes
+                .iter()
+                .all(|c| c.action == ChangeAction::Modify),
+            "all present doc files should be modified"
+        );
+
+        apply_plan(&plan).unwrap();
+
+        for name in ["README.md", "CONTRIBUTING.md", "AGENTS.md"] {
+            let text = fs::read_to_string(root.join(name)).unwrap();
+            assert!(
+                doc_protocol_is_installed(&text),
+                "{name} missing doc protocol"
+            );
+            assert!(text.contains("locus context"), "{name} missing CLI form");
+            assert!(text.contains("memory_search"), "{name} missing MCP form");
+            assert!(
+                text.contains("project:demo"),
+                "{name} missing namespace hint"
+            );
+        }
+    }
+
+    #[test]
+    fn doc_files_are_never_created_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let plan = plan_init(root).unwrap();
+        assert!(plan.doc_changes.is_empty());
+
+        apply_plan(&plan).unwrap();
+        for name in DOC_FILE_NAMES {
+            assert!(!root.join(name).exists(), "should not create {name}");
+        }
+    }
+
+    #[test]
+    fn repeated_init_does_not_duplicate_doc_block() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "README.md", "# Demo\n");
+
+        let (plan1, _) = init_project(root).unwrap();
+        assert!(plan1
+            .doc_changes
+            .iter()
+            .any(|c| c.action == ChangeAction::Modify));
+
+        let text1 = fs::read_to_string(root.join("README.md")).unwrap();
+        let count1 = text1.matches(DOC_PROTOCOL_START_MARKER).count();
+        assert_eq!(count1, 1);
+
+        let plan2 = plan_init(root).unwrap();
+        assert!(plan2.is_noop(), "second init should be a no-op");
+        apply_plan(&plan2).unwrap();
+
+        let text2 = fs::read_to_string(root.join("README.md")).unwrap();
+        assert_eq!(text1, text2);
+        assert_eq!(text2.matches(DOC_PROTOCOL_START_MARKER).count(), 1);
+    }
+
+    #[test]
+    fn doc_block_keeps_user_content_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "README.md", "keep me exactly\n");
+
+        let (plan, _) = init_project(root).unwrap();
+        let readme = plan
+            .doc_changes
+            .iter()
+            .find(|c| c.label == "README.md")
+            .expect("README change");
+        assert_eq!(readme.action, ChangeAction::Modify);
+        assert!(readme.proposed_content.starts_with("keep me exactly"));
+
+        apply_plan(&plan).unwrap();
+        let text = fs::read_to_string(root.join("README.md")).unwrap();
+        assert!(text.starts_with("keep me exactly"));
+        assert!(doc_protocol_is_installed(&text));
     }
 }
