@@ -1,7 +1,7 @@
 //! `locus` — the human-facing CLI.
 //!
-//! Commands: `remember`, `search`, `context`, `forget`, `status`, `doctor`,
-//! `reindex`, `daemon`, `mcp`.
+//! Commands: `init`, `remember`, `search`, `context`, `forget`, `status`,
+//! `doctor`, `reindex`, `daemon`, `mcp`.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -11,8 +11,8 @@ mod commands;
 mod tests;
 
 use commands::{
-    context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd, forget::ForgetCmd, mcp::McpCmd,
-    reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd, status::StatusCmd,
+    context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd, forget::ForgetCmd, init::InitCmd,
+    mcp::McpCmd, reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd, status::StatusCmd,
 };
 
 /// Locus — local-first, long-term memory for AI coding agents
@@ -31,6 +31,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Install Locus memory protocol into project rules and MCP config
+    Init(InitCmd),
+
     /// Remember a fact, decision, preference, or other memory
     Remember(RememberCmd),
 
@@ -70,6 +73,7 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
+        Commands::Init(cmd) => cmd.run(),
         Commands::Remember(cmd) => cmd.run(),
         Commands::Search(cmd) => cmd.run(),
         Commands::Context(cmd) => cmd.run(),

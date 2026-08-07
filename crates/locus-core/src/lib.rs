@@ -6,6 +6,7 @@
 
 pub mod context;
 pub mod error;
+pub mod init;
 pub mod ipc;
 pub mod logging;
 pub mod memory;

@@ -1268,7 +1268,7 @@ The MCP server should communicate with `locusd` through local IPC.
 
 ## U-008: Project Init and Agent Rules
 
-Status: Backlog  
+Status: Done 
 Priority: P0  
 Depends On: U-005, U-007  
 Blocks: U-013
@@ -1285,19 +1285,19 @@ It should install a visible memory protocol into project rule files and MCP conf
 
 ### Scope
 
-- [ ] Implement `locus init`.
-- [ ] Detect current project type.
-- [ ] Detect `.cursorrules`.
-- [ ] Detect `CLAUDE.md`.
-- [ ] Detect `.clinerules`.
-- [ ] Detect MCP config location where possible.
-- [ ] Show diff before modifying files.
-- [ ] Require confirmation unless `--yes` is used.
-- [ ] Create backups before modifying files.
-- [ ] Append a visible `Locus Memory Protocol` block.
-- [ ] Make init idempotent.
-- [ ] Add MCP config for `locus mcp`.
-- [ ] Do not silently overwrite user content.
+- [x] Implement `locus init`.
+- [x] Detect current project type.
+- [x] Detect `.cursorrules`.
+- [x] Detect `CLAUDE.md`.
+- [x] Detect `.clinerules`.
+- [x] Detect MCP config location where possible.
+- [x] Show diff before modifying files.
+- [x] Require confirmation unless `--yes` is used.
+- [x] Create backups before modifying files.
+- [x] Append a visible `Locus Memory Protocol` block.
+- [x] Make init idempotent.
+- [x] Add MCP config for `locus mcp`.
+- [x] Do not silently overwrite user content.
 
 ### Installed Protocol Must Say
 
@@ -1309,21 +1309,21 @@ It should install a visible memory protocol into project rule files and MCP conf
 
 ### Tests
 
-- [ ] Fresh project gets rules block.
-- [ ] Existing file is appended safely.
-- [ ] Repeated init does not duplicate block.
-- [ ] Backup is created.
-- [ ] MCP config remains valid JSON.
-- [ ] `--yes` works non-interactively.
-- [ ] Init does not corrupt existing file.
+- [x] Fresh project gets rules block.
+- [x] Existing file is appended safely.
+- [x] Repeated init does not duplicate block.
+- [x] Backup is created.
+- [x] MCP config remains valid JSON.
+- [x] `--yes` works non-interactively.
+- [x] Init does not corrupt existing file.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Init flow documented.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Init flow documented.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
 
 ---
 

@@ -125,6 +125,7 @@ Storage and search live in the same file. SQLite is the canonical store, and its
 Human-facing CLI.
 
 ```bash
+locus init                          # install agent rules + MCP config (once per project)
 locus remember "Use Postgres for auth service" --type decision --namespace project:auth
 locus search "auth database"
 locus context "auth database"
@@ -133,6 +134,32 @@ locus status
 locus doctor
 locus reindex
 ```
+
+### `locus init`
+
+Run once at the project root. Locus:
+
+1. Detects the project type (Rust, Node, …) and name.
+2. Finds existing agent rule files (`.cursorrules`, `CLAUDE.md`, `.clinerules`)
+   — or creates them on a fresh project.
+3. Finds project MCP configs (`.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`)
+   — or creates the common ones.
+4. Prints a diff of planned changes.
+5. Asks for confirmation (skip with `--yes`).
+6. Backs up any file it will modify as `<name>.locus-backup`.
+7. Appends a visible **Locus Memory Protocol** block (idempotent markers) and
+   merges a `locus mcp` server entry into MCP JSON.
+
+```bash
+locus init                  # interactive: show plan, confirm, apply
+locus init --yes            # non-interactive (CI / scripts)
+locus init --dry-run        # show plan only
+locus init --path ./my-app  # explicit project root
+```
+
+The protocol tells agents to call `memory_search` before non-trivial changes,
+follow returned decisions, call `memory_save` for new confirmed decisions, never
+store secrets, and continue normally on `NO_RELEVANT_MEMORY`.
 
 ### `locusd`
 
@@ -207,7 +234,7 @@ sequenceDiagram
 
 ## Example MCP Client Config
 
-Example:
+`locus init` writes this for you. Manual equivalent:
 
 ```json
 {
@@ -219,6 +246,14 @@ Example:
   }
 }
 ```
+
+Project-level paths Locus manages:
+
+| Tool | Config file |
+|---|---|
+| Claude Code | `.mcp.json` |
+| Cursor | `.cursor/mcp.json` |
+| VS Code / Copilot | `.vscode/mcp.json` |
 
 ---
 

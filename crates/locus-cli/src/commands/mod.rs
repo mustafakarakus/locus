@@ -2,6 +2,7 @@ pub mod context;
 pub mod daemon;
 pub mod doctor;
 pub mod forget;
+pub mod init;
 pub mod mcp;
 pub mod reindex;
 pub mod remember;
