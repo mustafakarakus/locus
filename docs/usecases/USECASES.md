@@ -1377,7 +1377,7 @@ Use standard Git hooks.
 
 ## U-010: Conflict, Decay, and Importance
 
-Status: Backlog  
+Status: Done
 Priority: P1  
 Depends On: U-003  
 Blocks: U-013
@@ -1392,30 +1392,30 @@ Add time-aware ranking, importance ranking, and basic conflict detection.
 
 ### Scope
 
-- [ ] Add recency decay to ranking.
-- [ ] Add importance boost to ranking.
-- [ ] Detect likely conflicting memories.
-- [ ] Mark conflicts for review.
-- [ ] Add `locus conflicts` command.
-- [ ] Prefer newer confirmed decisions over older ones.
-- [ ] Do not silently delete memories.
-- [ ] Store conflict metadata.
+- [x] Add recency decay to ranking.
+- [x] Add importance boost to ranking.
+- [x] Detect likely conflicting memories.
+- [x] Mark conflicts for review.
+- [x] Add `locus conflicts` command.
+- [x] Prefer newer confirmed decisions over older ones.
+- [x] Do not silently delete memories.
+- [x] Store conflict metadata.
 
 ### Tests
 
-- [ ] Newer memory ranks above older memory when relevance is close.
-- [ ] Higher importance ranks above lower importance when relevance is close.
-- [ ] Conflicting decisions are detected.
-- [ ] Conflict list can be shown.
-- [ ] Conflict detection does not delete data.
+- [x] Newer memory ranks above older memory when relevance is close.
+- [x] Higher importance ranks above lower importance when relevance is close.
+- [x] Conflicting decisions are detected.
+- [x] Conflict list can be shown.
+- [x] Conflict detection does not delete data.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Ranking behavior documented.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Ranking behavior documented.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
 
 ---
 

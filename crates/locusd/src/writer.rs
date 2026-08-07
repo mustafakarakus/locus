@@ -79,6 +79,11 @@ fn run_op(store: &Store, op: WriterOp) -> Result<WriterOk> {
     match op {
         WriterOp::Remember(new_memory) => {
             let id = store.insert_memory(new_memory)?;
+            // Best-effort conflict detection: a failure here must not lose the
+            // canonical memory that was just inserted.
+            if let Ok(memory) = store.get_memory_by_id(&id) {
+                let _ = store.detect_and_store_conflicts(&memory);
+            }
             Ok(WriterOk::Remembered(id))
         }
         WriterOp::Forget(id) => {

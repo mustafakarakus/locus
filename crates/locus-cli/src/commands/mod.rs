@@ -1,3 +1,4 @@
+pub mod conflicts;
 pub mod context;
 pub mod daemon;
 pub mod doctor;

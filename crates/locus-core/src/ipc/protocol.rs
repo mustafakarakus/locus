@@ -42,6 +42,7 @@ pub mod command {
     pub const FORGET: &str = "forget";
     pub const REINDEX: &str = "reindex";
     pub const STOP: &str = "stop";
+    pub const CONFLICTS: &str = "conflicts";
 }
 
 /// A single IPC request.
@@ -234,6 +235,20 @@ pub struct ForgetResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReindexResponse {
     pub reindexed: usize,
+}
+
+/// Payload for the `conflicts` command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictsRequest {
+    #[serde(default)]
+    pub namespace: Option<String>,
+}
+
+/// Response payload for the `conflicts` command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictsResponse {
+    pub count: usize,
+    pub conflicts: Vec<crate::conflict::ConflictRecord>,
 }
 
 /// Response payload for the `ping` command.

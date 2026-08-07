@@ -1,7 +1,7 @@
 //! `locus` — the human-facing CLI.
 //!
 //! Commands: `init`, `remember`, `search`, `context`, `forget`, `status`,
-//! `doctor`, `reindex`, `daemon`, `mcp`.
+//! `doctor`, `reindex`, `daemon`, `mcp`, `conflicts`.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -11,9 +11,9 @@ mod commands;
 mod tests;
 
 use commands::{
-    context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd, forget::ForgetCmd, hook::HookCmd,
-    init::InitCmd, mcp::McpCmd, reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd,
-    status::StatusCmd,
+    conflicts::ConflictsCmd, context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd,
+    forget::ForgetCmd, hook::HookCmd, init::InitCmd, mcp::McpCmd, reindex::ReindexCmd,
+    remember::RememberCmd, search::SearchCmd, status::StatusCmd,
 };
 
 /// Locus — local-first, long-term memory for AI coding agents
@@ -64,6 +64,9 @@ enum Commands {
 
     /// Run the MCP server over stdio (for AI coding agents)
     Mcp(McpCmd),
+
+    /// List memories that may conflict with each other
+    Conflicts(ConflictsCmd),
 }
 
 fn main() -> Result<()> {
@@ -88,5 +91,6 @@ fn main() -> Result<()> {
         Commands::Reindex(cmd) => cmd.run(),
         Commands::Daemon(cmd) => cmd.run(),
         Commands::Mcp(cmd) => cmd.run(),
+        Commands::Conflicts(cmd) => cmd.run(),
     }
 }
