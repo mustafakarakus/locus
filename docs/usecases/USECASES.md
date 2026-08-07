@@ -798,7 +798,7 @@ Requirements:
 - [x] Warnings are non-fatal; `ok` remains `true` when warnings are present.
 - [x] Errors are fatal; `ok` is `false` and `error` is present.
 - [x] Cap warnings at 5 and dedupe by `code`.
-- [ ] MCP tool results propagate `warnings` so agents can surface them. *(U-007)*
+- [x] MCP tool results propagate `warnings` so agents can surface them.
 - [x] Reject unsupported protocol versions.
 - [x] Reject oversized messages.
 - [x] Close connection on repeated malformed input.
@@ -874,7 +874,7 @@ Requirements:
 - [x] If no daemon is running, client starts `locusd` automatically.
 - [x] Auto-start must avoid starting multiple daemons.
 - [x] Auto-start must work from CLI.
-- [ ] Auto-start must work from MCP server. *(U-007)*
+- [x] Auto-start must work from MCP server.
 - [x] Auto-start must work after stale daemon state.
 - [x] Auto-start must not require elevated permissions.
 - [x] Auto-start must fail with a clear error if IPC endpoint is unavailable.
@@ -1213,7 +1213,7 @@ These may be considered later only as explicit separate use cases.
 
 ## U-007: MCP Server
 
-Status: Backlog  
+Status: Done
 Priority: P0  
 Depends On: U-004, U-006  
 Blocks: U-008, U-013
@@ -1230,39 +1230,39 @@ The MCP server should communicate with `locusd` through local IPC.
 
 ### Scope
 
-- [ ] Implement `locus mcp`.
-- [ ] Use stdio transport.
-- [ ] Implement MCP protocol framing according to official spec.
-- [ ] Implement tool `memory_search`.
-- [ ] Implement tool `memory_save`.
-- [ ] Implement tool `memory_forget`.
-- [ ] Implement tool `memory_status`.
-- [ ] Validate all inputs.
-- [ ] Return compressed Markdown by default from `memory_search`.
-- [ ] Return structured errors.
-- [ ] Do not expose raw database access.
-- [ ] Do not use network.
-- [ ] Ensure MCP server starts quickly.
-- [ ] Ensure MCP server works without a running daemon by auto-starting it.
+- [x] Implement `locus mcp`.
+- [x] Use stdio transport.
+- [x] Implement MCP protocol framing according to official spec.
+- [x] Implement tool `memory_search`.
+- [x] Implement tool `memory_save`.
+- [x] Implement tool `memory_forget`.
+- [x] Implement tool `memory_status`.
+- [x] Validate all inputs.
+- [x] Return compressed Markdown by default from `memory_search`.
+- [x] Return structured errors.
+- [x] Do not expose raw database access.
+- [x] Do not use network.
+- [x] Ensure MCP server starts quickly.
+- [x] Ensure MCP server works without a running daemon by auto-starting it.
 
 ### Tests
 
-- [ ] MCP server starts.
-- [ ] `memory_save` stores memory.
-- [ ] `memory_search` returns brief.
-- [ ] `memory_forget` deletes memory.
-- [ ] Invalid tool input returns structured error.
-- [ ] Unknown tool returns error.
-- [ ] Server shuts down cleanly.
-- [ ] Server works with auto-started daemon.
+- [x] MCP server starts.
+- [x] `memory_save` stores memory.
+- [x] `memory_search` returns brief.
+- [x] `memory_forget` deletes memory.
+- [x] Invalid tool input returns structured error.
+- [x] Unknown tool returns error.
+- [x] Server shuts down cleanly.
+- [x] Server works with auto-started daemon.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Example MCP config documented.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Example MCP config documented.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
 
 ---
 

@@ -273,9 +273,11 @@ Contains:
 
 Contains:
 
-- `locus mcp` command
-- MCP tool definitions
-- stdio transport
+- `locus mcp` / `locus-mcp` binary
+- MCP tool definitions (`memory_search`, `memory_save`, `memory_forget`,
+  `memory_status`)
+- blocking JSON-RPC 2.0 stdio transport (no Tokio — see DECISIONS.md D-9)
+- daemon auto-start via the shared IPC client
 
 ### locus-testkit
 

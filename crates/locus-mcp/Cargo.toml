@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "MCP server exposing Locus memory tools over stdio."
 
+[lib]
+name = "locus_mcp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "locus-mcp"
 path = "src/main.rs"
@@ -14,6 +18,14 @@ path = "src/main.rs"
 [dependencies]
 locus-core.workspace = true
 anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
