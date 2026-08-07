@@ -164,6 +164,9 @@ pub struct RememberRequest {
     pub importance: u8,
     #[serde(default)]
     pub source: Option<String>,
+    /// Explicit consent to store a detected secret verbatim (U-011).
+    #[serde(default)]
+    pub allow_secret: bool,
 }
 
 fn default_importance() -> u8 {

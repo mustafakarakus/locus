@@ -557,3 +557,117 @@ fn endpoint_is_local_only() {
     let socket = daemon.paths.endpoint().socket_file().expect("socket path");
     assert!(socket.starts_with(daemon.paths.data_dir()));
 }
+
+#[test]
+fn remember_with_secret_redacts_and_returns_warning() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    let secret = "ghp_123456789012345678901234567890123456";
+
+    let response = daemon.request(
+        command::REMEMBER,
+        serde_json::json!({
+            "type": "fact",
+            "title": "Deploy token",
+            "content": format!("the deploy token is {secret}"),
+        }),
+    );
+    assert!(response.ok);
+    assert!(
+        !response.warnings.is_empty(),
+        "expected a redaction warning"
+    );
+    assert_eq!(response.warnings[0].code, "secret_redacted");
+    assert!(
+        !response.warnings[0].message.contains(secret),
+        "warning must not leak the secret"
+    );
+
+    let id = response.payload.expect("payload")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    // Verify the stored memory is redacted, not the raw secret.
+    let store = locus_core::store::Store::open_at(daemon.paths.db_file()).expect("open store");
+    let inserted = store.get_memory_by_id(&id).expect("memory exists");
+    assert!(
+        !inserted.content.contains(secret),
+        "secret must not be stored"
+    );
+    assert!(inserted.content.contains("[REDACTED:github-pat]"));
+}
+
+#[test]
+fn remember_allow_secret_stores_verbatim_without_warning() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    let secret = "ghp_123456789012345678901234567890123456";
+
+    let response = daemon.request(
+        command::REMEMBER,
+        serde_json::json!({
+            "type": "fact",
+            "title": "Deploy token",
+            "content": format!("the deploy token is {secret}"),
+            "allow_secret": true,
+        }),
+    );
+    assert!(response.ok);
+    assert!(response.warnings.is_empty(), "no warning when allowed");
+
+    let id = response.payload.expect("payload")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let store = locus_core::store::Store::open_at(daemon.paths.db_file()).expect("open store");
+    let inserted = store.get_memory_by_id(&id).expect("memory exists");
+    assert!(
+        inserted.content.contains(secret),
+        "allow_secret keeps verbatim"
+    );
+}
+
+#[test]
+fn remember_clean_content_has_no_warnings() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    let response = daemon.request(
+        command::REMEMBER,
+        serde_json::json!({
+            "type": "fact",
+            "title": "Adopt FTS5",
+            "content": "Locus uses SQLite FTS5 for full-text search",
+        }),
+    );
+    assert!(response.ok);
+    assert!(
+        response.warnings.is_empty(),
+        "no warnings for clean content"
+    );
+}
+
+#[test]
+fn debug_logs_do_not_contain_secrets() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    let secret = "ghp_123456789012345678901234567890123456";
+
+    let response = daemon.request(
+        command::REMEMBER,
+        serde_json::json!({
+            "type": "fact",
+            "title": "Deploy token",
+            "content": format!("the deploy token is {secret}"),
+        }),
+    );
+    assert!(response.ok);
+
+    let log_file = daemon.paths.log_file();
+    let log_text = std::fs::read_to_string(log_file).expect("log file readable");
+    assert!(
+        !log_text.contains(secret),
+        "daemon log must not contain the secret"
+    );
+    assert!(
+        !log_text.contains("Deploy token"),
+        "log must not contain memory content"
+    );
+}

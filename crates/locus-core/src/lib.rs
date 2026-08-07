@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod logging;
 pub mod memory;
 pub mod search;
+pub mod security;
 pub mod store;
 
 pub use error::{Error, Result};

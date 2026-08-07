@@ -33,6 +33,10 @@ pub struct RememberCmd {
     #[arg(short, long)]
     pub source: Option<String>,
 
+    /// Store detected secrets verbatim instead of redacting them (explicit consent)
+    #[arg(long)]
+    pub allow_secret: bool,
+
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
@@ -76,7 +80,7 @@ impl RememberCmd {
             source: self.source,
         };
 
-        let id = store.insert_memory(new_memory)?;
+        let (id, warnings) = store.insert_memory_checked(new_memory, self.allow_secret)?;
 
         if self.json {
             println!(
@@ -86,6 +90,10 @@ impl RememberCmd {
         } else {
             println!("✓ Remembered: {}", title);
             println!("  ID: {}", id);
+        }
+
+        for warning in &warnings {
+            eprintln!("warning: {}", warning.message);
         }
 
         Ok(())
