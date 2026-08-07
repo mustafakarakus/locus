@@ -1422,7 +1422,7 @@ Add time-aware ranking, importance ranking, and basic conflict detection.
 
 ## U-011: Security and Secret Redaction
 
-Status: Backlog  
+Status: Done  
 Priority: P0  
 Depends On: U-002, U-005  
 Blocks: U-013
@@ -1438,40 +1438,40 @@ sets rather than hand-rolled regexes.
 
 ### Scope
 
-- [ ] Vendor public rule sets from gitleaks and/or detect-secrets as static data.
-- [ ] Verify license of vendored pattern files and record attribution.
-- [ ] Detect common secret patterns using the vendored rules.
-- [ ] Default behavior is redact-or-warn, never silent drop.
-- [ ] Never hard-reject without flagging; surface a warning instead.
-- [ ] Add `--allow-secret` override for explicit user consent.
-- [ ] Emit warnings through the IPC/MCP `warnings` array.
-- [ ] Do not log secrets.
-- [ ] Do not include secrets in debug output.
-- [ ] Ensure database and socket permissions are restrictive.
-- [ ] Ensure namespace isolation.
+- [x] Vendor public rule sets from gitleaks and/or detect-secrets as static data.
+- [x] Verify license of vendored pattern files and record attribution.
+- [x] Detect common secret patterns using the vendored rules.
+- [x] Default behavior is redact-or-warn, never silent drop.
+- [x] Never hard-reject without flagging; surface a warning instead.
+- [x] Add `--allow-secret` override for explicit user consent.
+- [x] Emit warnings through the IPC/MCP `warnings` array.
+- [x] Do not log secrets.
+- [x] Do not include secrets in debug output.
+- [x] Ensure database and socket permissions are restrictive.
+- [x] Ensure namespace isolation.
 
 ### Tests
 
-- [ ] Real API key pattern (AWS `AKIA...`) is flagged.
-- [ ] Real token pattern (GitHub `ghp_...`) is flagged.
-- [ ] Private key block is flagged.
-- [ ] Password-in-URL is flagged.
-- [ ] UUID is NOT flagged.
-- [ ] Git commit SHA is NOT flagged.
-- [ ] Dependency-lock hash is NOT flagged.
-- [ ] Long benign base64-like string is NOT flagged.
-- [ ] Override flag `--allow-secret` works.
-- [ ] Warnings are returned in the response `warnings` array.
-- [ ] Debug logs do not contain secrets.
-- [ ] File permissions are safe.
+- [x] Real API key pattern (AWS `AKIA...`) is flagged.
+- [x] Real token pattern (GitHub `ghp_...`) is flagged.
+- [x] Private key block is flagged.
+- [x] Password-in-URL is flagged.
+- [x] UUID is NOT flagged.
+- [x] Git commit SHA is NOT flagged.
+- [x] Dependency-lock hash is NOT flagged.
+- [x] Long benign base64-like string is NOT flagged.
+- [x] Override flag `--allow-secret` works.
+- [x] Warnings are returned in the response `warnings` array.
+- [x] Debug logs do not contain secrets.
+- [x] File permissions are safe.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Security rules documented.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Security rules documented.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
 
 ---
 

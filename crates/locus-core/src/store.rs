@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::conflict::{self, ConflictRecord};
 use crate::context::{self, ContextBriefOptions};
+use crate::ipc::protocol::Warning;
 use crate::memory::{
     normalize_entities, normalize_namespace, normalize_optional, validate_content,
     validate_importance, validate_title, ListFilter, Memory, MemoryType, NewMemory, UpdateMemory,
@@ -194,6 +195,34 @@ impl Store {
         upsert_fts_row(&tx, &id, &title, &content)?;
         tx.commit()?;
         Ok(id)
+    }
+
+    /// Inserts a memory with redact-or-warn secret handling (U-011).
+    ///
+    /// Detected secrets in the title/content are replaced with a
+    /// `[REDACTED:rule-id]` placeholder before storage and a non-fatal warning
+    /// is returned. When `allow_secret` is set the memory is stored verbatim
+    /// (explicit user consent) with no warnings. Nothing is ever hard-rejected.
+    pub fn insert_memory_checked(
+        &self,
+        input: NewMemory,
+        allow_secret: bool,
+    ) -> Result<(String, Vec<Warning>)> {
+        let (redacted_title, redacted_content, matches) =
+            crate::security::redact_title_and_content(&input.title, &input.content);
+
+        if matches.is_empty() || allow_secret {
+            let id = self.insert_memory(input)?;
+            return Ok((id, Vec::new()));
+        }
+
+        let input = NewMemory {
+            title: redacted_title,
+            content: redacted_content,
+            ..input
+        };
+        let id = self.insert_memory(input)?;
+        Ok((id, crate::security::build_warnings(&matches)))
     }
 
     /// Updates an existing memory.
@@ -1577,5 +1606,77 @@ mod tests {
         assert_eq!(count, 1);
 
         let _ = (id_a, id_b);
+    }
+
+    #[test]
+    fn insert_memory_checked_redacts_secret_and_returns_warning() {
+        let (store, _tmp, _) = test_store();
+        let memory = NewMemory {
+            namespace: Some("project:auth".to_string()),
+            memory_type: MemoryType::Fact,
+            title: "Deploy token".to_string(),
+            content: "the deploy token is ghp_123456789012345678901234567890123456".to_string(),
+            entities: vec![],
+            importance: 50,
+            source: None,
+        };
+
+        let (id, warnings) = store
+            .insert_memory_checked(memory, false)
+            .expect("checked insert should succeed");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, "secret_redacted");
+        assert!(
+            !warnings[0].message.contains("ghp_"),
+            "warning leaked secret"
+        );
+
+        let inserted = store.get_memory_by_id(&id).expect("memory should exist");
+        assert_eq!(
+            inserted.title, "Deploy token",
+            "clean title must be untouched"
+        );
+        assert!(inserted.content.contains("[REDACTED:github-pat]"));
+        assert!(!inserted.content.contains("ghp_"), "secret stored verbatim");
+    }
+
+    #[test]
+    fn insert_memory_checked_allow_secret_stores_verbatim_without_warnings() {
+        let (store, _tmp, _) = test_store();
+        let secret = "ghp_123456789012345678901234567890123456";
+        let memory = NewMemory {
+            namespace: Some("project:auth".to_string()),
+            memory_type: MemoryType::Fact,
+            title: "Deploy token".to_string(),
+            content: format!("the deploy token is {secret}"),
+            entities: vec![],
+            importance: 50,
+            source: None,
+        };
+
+        let (id, warnings) = store
+            .insert_memory_checked(memory, true)
+            .expect("checked insert should succeed");
+        assert!(warnings.is_empty());
+
+        let inserted = store.get_memory_by_id(&id).expect("memory should exist");
+        assert!(
+            inserted.content.contains(secret),
+            "allow_secret must keep verbatim"
+        );
+    }
+
+    #[test]
+    fn insert_memory_checked_clean_content_has_no_warnings() {
+        let (store, _tmp, _) = test_store();
+        let (id, warnings) = store
+            .insert_memory_checked(
+                sample_new_memory(Some("project:auth"), MemoryType::Decision),
+                false,
+            )
+            .expect("checked insert should succeed");
+        assert!(warnings.is_empty());
+        let inserted = store.get_memory_by_id(&id).expect("memory should exist");
+        assert_eq!(inserted.title, "Use Postgres for auth");
     }
 }

@@ -7,20 +7,21 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
+use locus_core::ipc::protocol::Warning;
 use locus_core::memory::NewMemory;
 use locus_core::store::Store;
 use locus_core::Result;
 
 /// A mutating operation to run on the writer thread.
 pub enum WriterOp {
-    Remember(NewMemory),
+    Remember(NewMemory, bool),
     Forget(String),
     Reindex,
 }
 
 /// The result of a successful writer operation.
 pub enum WriterOk {
-    Remembered(String),
+    Remembered(String, Vec<Warning>),
     Forgotten,
     Reindexed(usize),
 }
@@ -77,14 +78,14 @@ fn writer_loop(store: Store, rx: Receiver<WriterJob>) {
 
 fn run_op(store: &Store, op: WriterOp) -> Result<WriterOk> {
     match op {
-        WriterOp::Remember(new_memory) => {
-            let id = store.insert_memory(new_memory)?;
+        WriterOp::Remember(new_memory, allow_secret) => {
+            let (id, warnings) = store.insert_memory_checked(new_memory, allow_secret)?;
             // Best-effort conflict detection: a failure here must not lose the
             // canonical memory that was just inserted.
             if let Ok(memory) = store.get_memory_by_id(&id) {
                 let _ = store.detect_and_store_conflicts(&memory);
             }
-            Ok(WriterOk::Remembered(id))
+            Ok(WriterOk::Remembered(id, warnings))
         }
         WriterOp::Forget(id) => {
             store.delete_memory(&id)?;

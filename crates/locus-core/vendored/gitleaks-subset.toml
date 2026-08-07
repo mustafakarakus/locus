@@ -1,0 +1,153 @@
+# Vendored Locus secret-detection rules (U-011).
+#
+# This is a curated SUBSET of the default gitleaks configuration
+# (https://github.com/gitleaks/gitleaks), vendored as static data and embedded
+# into locus-core at build time. See `README.md` in this directory for source,
+# license, and attribution. Regexes are copied character-for-character from
+# gitleaks `config/gitleaks.toml`.
+#
+# One additional rule is NOT from gitleaks: `password-in-url`, a curated rule
+# modeled on detect-secrets' URL_CREDENTIALS pattern, added to satisfy U-011's
+# "password-in-URL is flagged" requirement.
+
+title = "locus gitleaks subset"
+
+[[rules]]
+id = "aws-access-token"
+description = "AWS access key ID."
+regex = '''\b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\b'''
+entropy = 3
+
+[[rules]]
+id = "github-pat"
+description = "GitHub classic personal access token."
+regex = '''ghp_[0-9a-zA-Z]{36}'''
+entropy = 3
+
+[[rules]]
+id = "github-oauth"
+description = "GitHub OAuth access token."
+regex = '''gho_[0-9a-zA-Z]{36}'''
+entropy = 3
+
+[[rules]]
+id = "github-app-token"
+description = "GitHub app user/server-to-server token."
+regex = '''(?:ghu|ghs)_[0-9a-zA-Z]{36}'''
+entropy = 3
+
+[[rules]]
+id = "github-fine-grained-pat"
+description = "GitHub fine-grained personal access token."
+regex = '''github_pat_[0-9A-Za-z_]{82}'''
+entropy = 3
+
+[[rules]]
+id = "github-refresh-token"
+description = "GitHub refresh token."
+regex = '''ghr_[0-9a-zA-Z]{36}'''
+entropy = 3
+
+[[rules]]
+id = "private-key"
+description = "Private key block (PEM)."
+regex = '''(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----'''
+
+[[rules]]
+id = "gcp-api-key"
+description = "Google Cloud / GCP API key."
+regex = '''\b(AIza[\w-]{35})(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 4
+allowlist = [
+    '''AIzaSyabcdefghijklmnopqrstuvwxyz1234567''',
+    '''AIzaSyAnLA7NfeLquW1tJFpx_eQCxoX-oo6YyIs''',
+    '''AIzaSyCkEhVjf3pduRDt6d1yKOMitrUEke8agEM''',
+    '''AIzaSyDMAScliyLx7F0NPDEJi1QmyCgHIAODrlU''',
+    '''AIzaSyD3asb-2pEZVqMkmL6M9N6nHZRR_znhrh0''',
+    '''AIzayDNSXIbFmlXbIE6mCzDLQAqITYefhixbX4A''',
+    '''AIzaSyAdOS2zB6NCsk1pCdZ4-P6GBdi_UUPwX7c''',
+    '''AIzaSyASWm6HmTMdYWpgMnjRBjxcQ9CKctWmLd4''',
+    '''AIzaSyANUvH9H9BsUccjsu2pCmEkOPjjaXeDQgY''',
+    '''AIzaSyA5_iVawFQ8ABuTZNUdcwERLJv_a_p4wtM''',
+    '''AIzaSyA4UrcGxgwQFTfaI3no3t7Lt1sjmdnP5sQ''',
+    '''AIzaSyDSb51JiIcB6OJpwwMicseKRhhrOq1cS7g''',
+    '''AIzaSyBF2RrAIm4a0mO64EShQfqfd2AFnzAvvuU''',
+    '''AIzaSyBcE-OOIbhjyR83gm4r2MFCu4MJmprNXsw''',
+    '''AIzaSyB8qGxt4ec15vitgn44duC5ucxaOi4FmqE''',
+    '''AIzaSyA8vmApnrHNFE0bApF4hoZ11srVL_n0nvY''',
+]
+
+[[rules]]
+id = "slack-app-token"
+description = "Slack app token."
+regex = '''(?i)xapp-\d-[A-Z0-9]+-\d+-[a-z0-9]+'''
+entropy = 2
+
+[[rules]]
+id = "slack-legacy-token"
+description = "Slack legacy token."
+regex = '''xox[os]-\d+-\d+-\d+-[a-fA-F\d]+'''
+entropy = 2
+
+[[rules]]
+id = "slack-user-token"
+description = "Slack user token."
+regex = '''xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}'''
+entropy = 2
+
+[[rules]]
+id = "slack-webhook-url"
+description = "Slack incoming webhook URL."
+regex = '''(?:https?://)?hooks.slack.com/(?:services|workflows|triggers)/[A-Za-z0-9+/]{43,56}'''
+
+[[rules]]
+id = "stripe-access-token"
+description = "Stripe secret/restricted API key."
+regex = '''\b((?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99})(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 2
+
+[[rules]]
+id = "npm-access-token"
+description = "npm publish access token."
+regex = '''(?i)\b(npm_[a-z0-9]{36})(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 2
+
+[[rules]]
+id = "sendgrid-api-token"
+description = "SendGrid API token."
+regex = '''\b(SG\.(?i)[a-z0-9=_\-\.]{66})(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 2
+
+[[rules]]
+id = "twilio-api-key"
+description = "Twilio API key."
+regex = '''SK[0-9a-fA-F]{32}'''
+entropy = 3
+
+[[rules]]
+id = "jwt"
+description = "JSON Web Token."
+regex = '''\b(ey[a-zA-Z0-9]{17,}\.ey[a-zA-Z0-9\/\\_-]{17,}\.(?:[a-zA-Z0-9\/\\_-]{10,}={0,2})?)(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 3
+
+[[rules]]
+id = "pypi-upload-token"
+description = "PyPI upload token."
+regex = '''pypi-AgEIcHlwaS5vcmc[0-9A-Za-z_-]{50,1000}'''
+entropy = 3
+
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API key."
+regex = '''\b(sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})\b|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 3
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key."
+regex = '''\b(sk-ant-api03-[a-zA-Z0-9_\-]{93}AA)(?:[\x60'"\s;]|\\[nr]|$)'''
+
+[[rules]]
+id = "password-in-url"
+description = "Credentials embedded in a URL. Curated rule modeled on detect-secrets URL_CREDENTIALS."
+regex = '''(?i)[a-z][a-z0-9+.\-]*://[^@\s/:]+:[^@\s]*@'''

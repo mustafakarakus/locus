@@ -220,6 +220,7 @@ fn run_post_commit(path: Option<PathBuf>, commit: Option<String>) -> Result<()> 
         entities: vec!["git".to_string(), "commit".to_string(), short.to_string()],
         importance: 60,
         source: Some("git:post-commit".to_string()),
+        allow_secret: false,
     };
 
     let req = Request::new(

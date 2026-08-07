@@ -191,4 +191,54 @@ the "host-specific adapters + shared brief path" strategy is now concrete.
   and always includes both the CLI form (`locus context "<task>"`) and the MCP
   tool form (`memory_search`).
 
+### D-12 — U-011 secret redaction approach
+Decisions made while implementing Security and Secret Redaction. Extends D-4
+with the concrete shape of redact-or-warn.
+
+- **Ship a curated gitleaks subset, not the full rule set.** The full gitleaks
+  config is tuned for whole-repo scanning; its entropy-gated generic rules
+  (e.g. `generic-api-key`) and file-path allowlists do not translate to short
+  title/content fields. We vendor the distinctive-prefix rules that are
+  unambiguous in prose and satisfy U-011's test matrix, compiled once via
+  `include_str!` into a `LazyLock` set — nothing is fetched at runtime.
+
+- **Entropy gates are implemented, not dropped.** Rules with a gitleaks
+  `entropy` threshold only report matches whose Shannon entropy (bits/char,
+  base-2, the same measure gitleaks uses) meets it. This is what stops
+  repetitive/benign strings from tripping otherwise-plausible patterns.
+
+- **Two regexes are ASCII-normalized (semantically equivalent).** Rust's
+  `regex` crate treats `\w` as Unicode-aware, which blew the 10 MB compiled
+  size limit on `[\w-]{50,1000}` and `\w{82}`. They are rewritten as
+  `[0-9A-Za-z_-]` / `[0-9A-Za-z_]`, identical to Go's `\w` semantics, and the
+  deviation is recorded in the vendored README.
+
+- **Regex allowlists are kept; file-path allowlists are dropped.** Example-key
+  allowlists (GCP docs keys) are compiled and honored because memory content
+  legitimately quotes docs. `paths`-based allowlists are irrelevant to content
+  scanning and omitted.
+
+- **`password-in-url` is a curated addition.** gitleaks ships no dedicated
+  password-in-URL rule, so one was added modeled on detect-secrets'
+  `URL_CREDENTIALS` (any scheme, `scheme://user:pass@`), with attribution
+  recorded. This is the only non-gitleaks rule.
+
+- **Redaction is one choke point: `Store::insert_memory_checked`.**
+  `security::redact_title_and_content` runs before validation-adjacent insert;
+  raw `insert_memory` remains for internal/tooling use. The daemon writer
+  thread and CLI `remember` both use the checked path, so every user-facing
+  write is redact-or-warn by construction. Nothing is silently dropped and
+  nothing is hard-rejected — a detected secret is replaced with a
+  `[REDACTED:rule-id]` placeholder and a non-fatal warning.
+
+- **Warnings carry rule ids and counts only — never the secret value.** The
+  original secret never appears in warnings, IPC responses, or daemon logs;
+  redaction happens before storage and before any logging. A test asserts the
+  daemon log file contains no secret after a redacted write.
+
+- **`--allow-secret` is explicit write-time consent.** CLI flag and MCP/IPC
+  `allow_secret` field store the memory verbatim with no warning. There is no
+  read-time or query-time opt-out; the secret is either redacted at write time
+  or explicitly consented to.
+
 
