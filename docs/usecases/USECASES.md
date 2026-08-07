@@ -557,7 +557,7 @@ locus reindex
 
 ## U-006: Local Daemon and Cross-Platform IPC
 
-Status: Ready for Review  
+Status: Done 
 Priority: P0  
 Depends On: U-003, U-004, U-005  
 Blocks: U-007, U-009
