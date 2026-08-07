@@ -1,4 +1,5 @@
 pub mod context;
+pub mod daemon;
 pub mod doctor;
 pub mod forget;
 pub mod reindex;

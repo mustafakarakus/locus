@@ -11,8 +11,8 @@ mod commands;
 mod tests;
 
 use commands::{
-    context::ContextCmd, doctor::DoctorCmd, forget::ForgetCmd, reindex::ReindexCmd,
-    remember::RememberCmd, search::SearchCmd, status::StatusCmd,
+    context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd, forget::ForgetCmd,
+    reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd, status::StatusCmd,
 };
 
 /// Locus — local-first, long-term memory for AI coding agents
@@ -51,6 +51,9 @@ enum Commands {
 
     /// Rebuild the search index (consistency repair for FTS5)
     Reindex(ReindexCmd),
+
+    /// Control the background Locus daemon (`locusd`)
+    Daemon(DaemonCmd),
 }
 
 fn main() -> Result<()> {
@@ -71,5 +74,6 @@ fn main() -> Result<()> {
         Commands::Status(cmd) => cmd.run(),
         Commands::Doctor(cmd) => cmd.run(),
         Commands::Reindex(cmd) => cmd.run(),
+        Commands::Daemon(cmd) => cmd.run(),
     }
 }

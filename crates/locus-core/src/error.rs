@@ -31,6 +31,10 @@ pub enum Error {
     #[error("database error: {0}")]
     Sql(#[from] rusqlite::Error),
 
+    /// A serialization or deserialization operation failed.
+    #[error("serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
+
     /// A catch-all for errors that do not yet have a dedicated variant.
     #[error("{0}")]
     Other(String),
