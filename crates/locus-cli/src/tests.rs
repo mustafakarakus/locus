@@ -131,4 +131,6 @@ fn all_commands_are_listed_in_help() {
     assert!(stdout.contains("status"), "help missing 'status' command");
     assert!(stdout.contains("doctor"), "help missing 'doctor' command");
     assert!(stdout.contains("reindex"), "help missing 'reindex' command");
+    assert!(stdout.contains("daemon"), "help missing 'daemon' command");
+    assert!(stdout.contains("mcp"), "help missing 'mcp' command");
 }

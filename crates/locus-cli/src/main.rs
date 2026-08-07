@@ -1,7 +1,7 @@
 //! `locus` — the human-facing CLI.
 //!
-//! Scaffolding at U-001. Command implementations (`remember`, `search`,
-//! `context`, `forget`, `status`, `doctor`, `reindex`) land in U-005.
+//! Commands: `remember`, `search`, `context`, `forget`, `status`, `doctor`,
+//! `reindex`, `daemon`, `mcp`.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -11,7 +11,7 @@ mod commands;
 mod tests;
 
 use commands::{
-    context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd, forget::ForgetCmd,
+    context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd, forget::ForgetCmd, mcp::McpCmd,
     reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd, status::StatusCmd,
 };
 
@@ -54,6 +54,9 @@ enum Commands {
 
     /// Control the background Locus daemon (`locusd`)
     Daemon(DaemonCmd),
+
+    /// Run the MCP server over stdio (for AI coding agents)
+    Mcp(McpCmd),
 }
 
 fn main() -> Result<()> {
@@ -75,5 +78,6 @@ fn main() -> Result<()> {
         Commands::Doctor(cmd) => cmd.run(),
         Commands::Reindex(cmd) => cmd.run(),
         Commands::Daemon(cmd) => cmd.run(),
+        Commands::Mcp(cmd) => cmd.run(),
     }
 }

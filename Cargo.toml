@@ -17,6 +17,7 @@ repository = "https://github.com/locus/locus"
 
 [workspace.dependencies]
 locus-core = { path = "crates/locus-core" }
+locus-mcp = { path = "crates/locus-mcp" }
 locus-testkit = { path = "crates/locus-testkit" }
 
 anyhow = "1"

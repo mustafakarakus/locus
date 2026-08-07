@@ -148,14 +148,17 @@ Responsibilities:
 
 ### `locus mcp`
 
-MCP server for AI tools.
+MCP server for AI tools (JSON-RPC 2.0 over stdio). Talks to `locusd` over local
+IPC and auto-starts the daemon when needed.
 
 Exposes tools:
 
-- `memory_search`
-- `memory_save`
-- `memory_forget`
-- `memory_status`
+- `memory_search` — compressed Markdown brief (or `NO_RELEVANT_MEMORY`)
+- `memory_save` — store a memory
+- `memory_forget` — delete by ID
+- `memory_status` — daemon / database / search status
+
+Standalone binary equivalent: `locus-mcp`.
 
 ### SQLite + FTS5
 

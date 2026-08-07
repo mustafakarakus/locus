@@ -92,3 +92,20 @@ search engine, storage engine, or IPC transport from D-1/D-2/D-3.
   deferred rather than rushed; it is a performance refinement, not a behavior
   change, and can land without altering the IPC protocol. Flagged in U-006 as
   a known gap for the reviewer.
+
+### D-9 — U-007 MCP server is hand-rolled JSON-RPC over stdio
+Official Rust MCP SDKs (`rmcp` and similar) pull in Tokio. That conflicts with
+D-2 (blocking threads, no async runtime in v1). U-007 therefore implements a
+minimal tools-only MCP server:
+
+- newline-delimited JSON-RPC 2.0 on stdio (MCP transport rules)
+- lifecycle: `initialize` → `notifications/initialized` → `tools/list` /
+  `tools/call` / `ping`
+- protocol versions `2025-03-26` and `2024-11-05`
+- all tools talk to `locusd` through the existing IPC client (with auto-start)
+- `memory_search` returns a `ContextBrief` via the daemon `context` command
+  (same generator as CLI/hooks — D-5)
+- IPC `warnings` are appended as a second text content block containing JSON
+  `{"warnings":[...]}` so agents can surface them (D-6)
+
+Stdout is MCP-only; logs go to stderr. No network, no REST.
