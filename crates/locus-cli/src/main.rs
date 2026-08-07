@@ -11,8 +11,9 @@ mod commands;
 mod tests;
 
 use commands::{
-    context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd, forget::ForgetCmd, init::InitCmd,
-    mcp::McpCmd, reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd, status::StatusCmd,
+    context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd, forget::ForgetCmd, hook::HookCmd,
+    init::InitCmd, mcp::McpCmd, reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd,
+    status::StatusCmd,
 };
 
 /// Locus — local-first, long-term memory for AI coding agents
@@ -46,6 +47,9 @@ enum Commands {
     /// Delete a memory by ID
     Forget(ForgetCmd),
 
+    /// Manage git hook based memory ingestion
+    Hook(HookCmd),
+
     /// Show system and database status
     Status(StatusCmd),
 
@@ -78,6 +82,7 @@ fn main() -> Result<()> {
         Commands::Search(cmd) => cmd.run(),
         Commands::Context(cmd) => cmd.run(),
         Commands::Forget(cmd) => cmd.run(),
+        Commands::Hook(cmd) => cmd.run(),
         Commands::Status(cmd) => cmd.run(),
         Commands::Doctor(cmd) => cmd.run(),
         Commands::Reindex(cmd) => cmd.run(),
