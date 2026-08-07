@@ -1329,7 +1329,7 @@ It should install a visible memory protocol into project rule files and MCP conf
 
 ## U-009: Git-Based Ingestion
 
-Status: Backlog  
+Status: Done 
 Priority: P1  
 Depends On: U-005, U-006  
 Blocks: U-013
@@ -1344,34 +1344,34 @@ Use standard Git hooks.
 
 ### Scope
 
-- [ ] Implement `locus hook install`.
-- [ ] Implement `locus hook uninstall`.
-- [ ] Install a `post-commit` hook.
-- [ ] Send commit metadata to daemon.
-- [ ] Store commit message.
-- [ ] Store changed file list.
-- [ ] Do not store full diffs by default.
-- [ ] Do not break existing Git hooks.
-- [ ] Make hook execution fast.
-- [ ] Ensure hook does not block commit for long.
+- [x] Implement `locus hook install`.
+- [x] Implement `locus hook uninstall`.
+- [x] Install a `post-commit` hook.
+- [x] Send commit metadata to daemon.
+- [x] Store commit message.
+- [x] Store changed file list.
+- [x] Do not store full diffs by default.
+- [x] Do not break existing Git hooks.
+- [x] Make hook execution fast.
+- [x] Ensure hook does not block commit for long.
 
 ### Tests
 
-- [ ] Hook install works.
-- [ ] Hook uninstall works.
-- [ ] Existing hook is preserved or safely wrapped.
-- [ ] Commit metadata creates memory.
-- [ ] Large diff is not stored.
-- [ ] Hook does not require network.
-- [ ] Hook failure does not corrupt Git commit.
+- [x] Hook install works.
+- [x] Hook uninstall works.
+- [x] Existing hook is preserved or safely wrapped.
+- [x] Commit metadata creates memory.
+- [x] Large diff is not stored.
+- [x] Hook does not require network.
+- [x] Hook failure does not corrupt Git commit.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Hook safety documented.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Hook safety documented.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
 
 ---
 
