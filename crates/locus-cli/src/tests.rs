@@ -121,6 +121,7 @@ fn all_commands_are_listed_in_help() {
 
     assert!(output.status.success(), "help command failed");
     let stdout = String::from_utf8(output.stdout).expect("invalid UTF-8");
+    assert!(stdout.contains("init"), "help missing 'init' command");
     assert!(
         stdout.contains("remember"),
         "help missing 'remember' command"
