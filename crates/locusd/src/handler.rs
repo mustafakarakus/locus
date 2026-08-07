@@ -8,7 +8,7 @@ use locus_core::context::ContextBriefOptions;
 use locus_core::ipc::protocol::{
     command, error_code, ConflictsRequest, ConflictsResponse, ContextRequest, ContextResponse,
     ForgetRequest, ForgetResponse, PingResponse, ReindexResponse, RememberRequest,
-    RememberResponse, Request, Response, SearchRequest, SearchResponse, MAX_MESSAGE_BYTES,
+    RememberResponse, Request, Response, SearchRequest, SearchResponse, Warning, MAX_MESSAGE_BYTES,
     PROTOCOL_VERSION,
 };
 use locus_core::ipc::wire::{read_message, write_message, ReadOutcome};
@@ -201,8 +201,13 @@ fn handle_remember(shared: &Shared, request: &Request) -> Response {
         source: payload.source,
     };
 
-    match shared.writer().submit(WriterOp::Remember(new_memory)) {
-        Ok(WriterOk::Remembered(id)) => ok(request, &RememberResponse { id }),
+    match shared
+        .writer()
+        .submit(WriterOp::Remember(new_memory, payload.allow_secret))
+    {
+        Ok(WriterOk::Remembered(id, warnings)) => {
+            ok_with_warnings(request, &RememberResponse { id }, warnings)
+        }
         Ok(_) => internal(shared, request, "unexpected writer result"),
         Err(err) => error_response(shared, request, err),
     }
@@ -280,6 +285,21 @@ fn parse_type_filter(
 fn ok<T: serde::Serialize>(request: &Request, payload: &T) -> Response {
     match serde_json::to_value(payload) {
         Ok(value) => Response::ok(request.id.clone(), value, Vec::new()),
+        Err(_) => Response::error(
+            request.id.clone(),
+            error_code::INTERNAL,
+            "failed to encode response",
+        ),
+    }
+}
+
+fn ok_with_warnings<T: serde::Serialize>(
+    request: &Request,
+    payload: &T,
+    warnings: Vec<Warning>,
+) -> Response {
+    match serde_json::to_value(payload) {
+        Ok(value) => Response::ok(request.id.clone(), value, warnings),
         Err(_) => Response::error(
             request.id.clone(),
             error_code::INTERNAL,

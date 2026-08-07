@@ -64,7 +64,8 @@ pub fn catalog() -> Vec<Tool> {
         Tool {
             name: name::SAVE.into(),
             description: "Store a new memory (decision, preference, fact, etc.). \
-                Do not save secrets."
+                Detected secrets are redacted before storage with a warning; set \
+                allow_secret only for explicit, deliberate retention of a secret."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -103,6 +104,10 @@ pub fn catalog() -> Vec<Tool> {
                     "source": {
                         "type": "string",
                         "description": "Optional provenance string."
+                    },
+                    "allow_secret": {
+                        "type": "boolean",
+                        "description": "Explicit consent to store a detected secret verbatim instead of redacting it."
                     }
                 },
                 "required": ["content"],
@@ -275,6 +280,10 @@ impl ToolHost {
             entities,
             importance,
             source: optional_string(args, "source"),
+            allow_secret: match optional_bool(args, "allow_secret", false) {
+                Ok(v) => v,
+                Err(err) => return CallToolResult::error(err),
+            },
         };
 
         match self.ipc(command::REMEMBER, payload) {
@@ -493,5 +502,13 @@ fn optional_u8(args: &Value, key: &str, default: u8) -> Result<u8, String> {
             Ok(v as u8)
         }
         Some(_) => Err(format!("{key} must be an integer 0–100")),
+    }
+}
+
+fn optional_bool(args: &Value, key: &str, default: bool) -> Result<bool, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(format!("{key} must be a boolean")),
     }
 }
