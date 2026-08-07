@@ -349,6 +349,66 @@ impl Store {
         Ok(memories)
     }
 
+    /// Returns the path to the underlying SQLite database file.
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+
+    /// Returns the number of canonical memories stored.
+    pub fn memory_count(&self) -> Result<usize> {
+        let conn = self.connect_ro()?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
+    /// Returns the number of rows currently indexed in the FTS5 table.
+    pub fn fts_row_count(&self) -> Result<usize> {
+        let conn = self.connect_ro()?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM memory_fts", [], |row| row.get(0))?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
+    /// Reports whether the FTS5 index has drifted from the canonical rows.
+    ///
+    /// This is a cheap consistency check (comparing row counts) used on daemon
+    /// startup to decide whether a `reindex` is warranted. It never mutates
+    /// data.
+    pub fn fts_out_of_sync(&self) -> Result<bool> {
+        Ok(self.memory_count()? != self.fts_row_count()?)
+    }
+
+    /// Rebuilds the FTS5 search table from the canonical memory rows.
+    ///
+    /// For the default FTS5 backend this is a consistency-repair operation on
+    /// the same database file: it clears `memory_fts` and repopulates it from
+    /// `memories`/`entities`. It never deletes canonical data and returns the
+    /// number of rows indexed.
+    pub fn reindex(&self) -> Result<usize> {
+        let mut conn = self.connect_rw()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM memory_fts", [])?;
+        tx.execute(
+            "
+            INSERT INTO memory_fts (memory_id, title, content, entities)
+            SELECT
+                m.id,
+                m.title,
+                m.content,
+                COALESCE((
+                    SELECT group_concat(e.name, ' ')
+                    FROM memory_entities me
+                    INNER JOIN entities e ON e.id = me.entity_id
+                    WHERE me.memory_id = m.id
+                ), '')
+            FROM memories m
+            ",
+            [],
+        )?;
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM memory_fts", [], |row| row.get(0))?;
+        tx.commit()?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
     fn connect_rw(&self) -> Result<Connection> {
         let conn = Connection::open(&self.db_path)?;
         apply_pragmas(&conn)?;

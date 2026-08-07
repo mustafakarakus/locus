@@ -1,0 +1,559 @@
+//! Integration tests for the `locusd` daemon and its IPC transport (U-006).
+//!
+//! Each test spawns the real `locusd` binary against an isolated, temporary
+//! data directory (via `--data-dir`) and talks to it over the local socket
+//! using the same [`DaemonClient`] the CLI and MCP server use. The daemon is
+//! always torn down in `Drop`.
+
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use interprocess::local_socket::prelude::*;
+use interprocess::local_socket::Stream;
+use locus_core::ipc::paths::Paths;
+use locus_core::ipc::protocol::{command, error_code, Request, Response, PROTOCOL_VERSION};
+use locus_core::ipc::DaemonClient;
+use tempfile::TempDir;
+
+/// A running daemon bound to a private temp data directory.
+struct TestDaemon {
+    child: Child,
+    paths: Paths,
+    client: DaemonClient,
+    _dir: TempDir,
+}
+
+impl TestDaemon {
+    /// Spawns `locusd --foreground --data-dir <tmp>` plus any extra args and
+    /// blocks until it answers a ping (or panics on timeout).
+    fn start(extra_args: &[&str]) -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Paths::from_data_dir(dir.path());
+
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_locusd"));
+        cmd.arg("--foreground")
+            .arg("--data-dir")
+            .arg(dir.path())
+            .args(extra_args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let child = cmd.spawn().expect("spawn locusd");
+        let client = DaemonClient::new(paths.endpoint().clone());
+
+        let daemon = TestDaemon {
+            child,
+            paths,
+            client,
+            _dir: dir,
+        };
+        daemon.wait_until_running(Duration::from_secs(5));
+        daemon
+    }
+
+    fn wait_until_running(&self, timeout: Duration) {
+        if !wait_for(timeout, || self.client.is_running()) {
+            panic!("daemon did not become reachable within {timeout:?}");
+        }
+    }
+
+    fn wait_until_stopped(&self, timeout: Duration) -> bool {
+        wait_for(timeout, || !self.client.is_running())
+    }
+
+    /// Waits for the daemon *process* to exit without generating any IPC
+    /// activity (pinging would reset the idle timer). Used for idle-shutdown.
+    fn wait_until_exited(&mut self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return true,
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Sends a well-formed request and returns the parsed response.
+    fn request(&self, cmd: &str, payload: serde_json::Value) -> Response {
+        let request = Request::new("t", cmd, payload);
+        self.client.request(&request).expect("request")
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+}
+
+impl Drop for TestDaemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Polls `check` until it returns true or the timeout elapses.
+fn wait_for(timeout: Duration, mut check: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if check() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    check()
+}
+
+/// Opens a raw socket connection and performs a single newline-delimited
+/// request/response exchange, bypassing typed helpers. Used to probe malformed
+/// and oversized input handling.
+fn raw_exchange(paths: &Paths, request_bytes: &[u8]) -> Option<Vec<u8>> {
+    let name = paths.endpoint().to_name().ok()?;
+    let stream = Stream::connect(name).ok()?;
+
+    {
+        let mut writer = &stream;
+        writer.write_all(request_bytes).ok()?;
+        writer.write_all(b"\n").ok()?;
+        writer.flush().ok()?;
+    }
+
+    let mut reader = BufReader::new(&stream);
+    let mut line = Vec::new();
+    reader.read_until(b'\n', &mut line).ok()?;
+    if line.is_empty() {
+        None
+    } else {
+        Some(line)
+    }
+}
+
+// --- Lifecycle --------------------------------------------------------------
+
+#[test]
+fn starts_and_answers_ping() {
+    let daemon = TestDaemon::start(&[]);
+    let ping = daemon.client.ping().expect("ping");
+    assert_eq!(ping.protocol, PROTOCOL_VERSION);
+    assert_eq!(ping.version, locus_core::VERSION);
+}
+
+#[test]
+fn stop_command_shuts_down() {
+    let daemon = TestDaemon::start(&[]);
+    let response = daemon.request(command::STOP, serde_json::Value::Null);
+    assert!(response.ok);
+    assert!(
+        daemon.wait_until_stopped(Duration::from_secs(5)),
+        "daemon should stop after STOP command"
+    );
+}
+
+#[test]
+fn idle_timeout_shuts_down() {
+    let mut daemon = TestDaemon::start(&["--idle-timeout", "1"]);
+    assert!(
+        daemon.wait_until_exited(Duration::from_secs(6)),
+        "daemon should self-exit after the idle timeout"
+    );
+}
+
+#[test]
+fn no_idle_exit_keeps_running() {
+    let daemon = TestDaemon::start(&["--idle-timeout", "1", "--no-idle-exit"]);
+    // Give it well past the idle window; it must still be alive.
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        daemon.client.is_running(),
+        "daemon must not exit when idle is disabled"
+    );
+}
+
+#[test]
+fn double_start_is_refused() {
+    let daemon = TestDaemon::start(&[]);
+
+    let second = Command::new(env!("CARGO_BIN_EXE_locusd"))
+        .arg("--foreground")
+        .arg("--data-dir")
+        .arg(daemon.paths.data_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn second locusd")
+        .wait_with_output()
+        .expect("wait second locusd");
+
+    assert!(
+        !second.status.success(),
+        "a second daemon on the same data dir must refuse to start"
+    );
+    // Original daemon is unaffected.
+    assert!(daemon.client.is_running());
+}
+
+#[test]
+fn restarts_cleanly_and_client_reconnects() {
+    // Start a daemon on a fixed data dir, stop it, then start a fresh one on
+    // the same dir and confirm the client reconnects to the new instance.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths = Paths::from_data_dir(dir.path());
+    let client = DaemonClient::new(paths.endpoint().clone());
+
+    let spawn = || {
+        Command::new(env!("CARGO_BIN_EXE_locusd"))
+            .arg("--foreground")
+            .arg("--data-dir")
+            .arg(dir.path())
+            .arg("--no-idle-exit")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn locusd")
+    };
+
+    let mut first = spawn();
+    assert!(wait_for(Duration::from_secs(5), || client.is_running()));
+
+    // Stop the first instance and wait for the endpoint to go quiet.
+    let _ = client.request(&Request::new("s", command::STOP, serde_json::Value::Null));
+    assert!(wait_for(Duration::from_secs(5), || !client.is_running()));
+    let _ = first.wait();
+
+    // A fresh instance comes up on the same dir and the client reconnects.
+    let mut second = spawn();
+    assert!(
+        wait_for(Duration::from_secs(5), || client.is_running()),
+        "client should reconnect after restart"
+    );
+    assert!(client.ping().is_ok());
+
+    let _ = second.kill();
+    let _ = second.wait();
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_shuts_down_gracefully() {
+    let daemon = TestDaemon::start(&[]);
+    let status = Command::new("kill")
+        .arg("-TERM")
+        .arg(daemon.pid().to_string())
+        .status()
+        .expect("send SIGTERM");
+    assert!(status.success());
+    assert!(
+        daemon.wait_until_stopped(Duration::from_secs(5)),
+        "daemon should stop on SIGTERM"
+    );
+}
+
+// --- Transport --------------------------------------------------------------
+
+#[test]
+fn handles_many_sequential_connections() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    for _ in 0..25 {
+        assert!(daemon.client.ping().is_ok());
+    }
+}
+
+#[test]
+fn oversized_message_is_rejected() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    // One byte over the protocol maximum, no newline until the end.
+    let oversized = vec![b'x'; 1024 * 1024 + 1];
+    let reply = raw_exchange(&daemon.paths, &oversized).expect("reply");
+    let response: Response = serde_json::from_slice(&reply).expect("json");
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("error").code,
+        error_code::MESSAGE_TOO_LARGE
+    );
+    // Daemon survives and still serves.
+    assert!(daemon.client.is_running());
+}
+
+#[test]
+fn malformed_json_does_not_crash() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    let reply = raw_exchange(&daemon.paths, b"{not valid json").expect("reply");
+    let response: Response = serde_json::from_slice(&reply).expect("json");
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("error").code,
+        error_code::MALFORMED_JSON
+    );
+    assert!(daemon.client.is_running());
+}
+
+// --- Stale state ------------------------------------------------------------
+
+#[test]
+fn stale_socket_is_reclaimed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths = Paths::from_data_dir(dir.path());
+
+    // Simulate a leftover socket file from a crashed daemon.
+    let socket = paths.endpoint().socket_file().expect("unix socket path");
+    std::fs::write(socket, b"stale").expect("write stale socket");
+
+    // Seed the DB so we can prove recovery does not delete it.
+    let store = locus_core::store::Store::open_at(paths.db_file()).expect("open store");
+    let id = store
+        .insert_memory(locus_core::memory::NewMemory {
+            namespace: None,
+            memory_type: locus_core::memory::MemoryType::Fact,
+            title: "keep me".to_string(),
+            content: "survives daemon recovery".to_string(),
+            entities: vec![],
+            importance: 50,
+            source: None,
+        })
+        .expect("insert");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_locusd"))
+        .arg("--foreground")
+        .arg("--data-dir")
+        .arg(dir.path())
+        .arg("--no-idle-exit")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn locusd over stale socket");
+
+    let client = DaemonClient::new(paths.endpoint().clone());
+    assert!(
+        wait_for(Duration::from_secs(5), || client.is_running()),
+        "daemon should reclaim the stale socket and start"
+    );
+
+    // The pre-existing memory is still there — recovery did not wipe the DB.
+    let survived = store
+        .get_memory_by_id(&id)
+        .expect("memory should survive recovery");
+    assert_eq!(survived.id, id);
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+// --- Concurrency ------------------------------------------------------------
+
+#[test]
+fn concurrent_reads_are_served() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    // Seed a memory so searches return a hit.
+    daemon.request(
+        command::REMEMBER,
+        serde_json::json!({ "type": "fact", "title": "seed", "content": "concurrent read target" }),
+    );
+    let endpoint = daemon.paths.endpoint().clone();
+
+    // Mix concurrent ping, status, and search requests.
+    let handles: Vec<_> = (0..12)
+        .map(|i| {
+            let client = DaemonClient::new(endpoint.clone());
+            std::thread::spawn(move || {
+                let cmd = match i % 3 {
+                    0 => Request::new("p", command::PING, serde_json::Value::Null),
+                    1 => Request::new("s", command::STATUS, serde_json::Value::Null),
+                    _ => Request::new(
+                        "q",
+                        command::SEARCH,
+                        serde_json::json!({ "text": "concurrent" }),
+                    ),
+                };
+                client.request(&cmd).map(|r| r.ok).unwrap_or(false)
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        assert!(handle.join().expect("thread"));
+    }
+}
+
+#[test]
+fn concurrent_writes_are_serialized() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    let endpoint = daemon.paths.endpoint().clone();
+
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            let client = DaemonClient::new(endpoint.clone());
+            std::thread::spawn(move || {
+                let payload = serde_json::json!({
+                    "type": "fact",
+                    "title": format!("t{i}"),
+                    "content": format!("concurrent write number {i}"),
+                });
+                let request = Request::new("w", command::REMEMBER, payload);
+                let response = client.request(&request).expect("request");
+                assert!(response.ok, "write {i} should succeed");
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().expect("thread");
+    }
+
+    // All ten writes landed and the FTS index stayed consistent.
+    let status = daemon.request(command::STATUS, serde_json::Value::Null);
+    let payload = status.payload.expect("status payload");
+    assert_eq!(payload["memory_count"], 10);
+    assert_eq!(payload["fts_consistent"], true);
+}
+
+// --- Protocol ---------------------------------------------------------------
+
+#[test]
+fn unknown_command_returns_error() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    let response = daemon.request("frobnicate", serde_json::Value::Null);
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("error").code,
+        error_code::UNKNOWN_COMMAND
+    );
+}
+
+#[test]
+fn invalid_payload_returns_error() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    // `remember` requires a title/content object; a bare number is invalid.
+    let response = daemon.request(command::REMEMBER, serde_json::json!(42));
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("error").code,
+        error_code::INVALID_INPUT
+    );
+}
+
+#[test]
+fn unsupported_version_returns_error() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    let request = Request {
+        v: PROTOCOL_VERSION + 99,
+        id: "v".to_string(),
+        cmd: command::PING.to_string(),
+        payload: serde_json::Value::Null,
+    };
+    let response = daemon.client.request(&request).expect("request");
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("error").code,
+        error_code::UNSUPPORTED_VERSION
+    );
+}
+
+#[test]
+fn request_id_is_preserved() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    let request = Request::new("my-unique-id", command::PING, serde_json::Value::Null);
+    let response = daemon.client.request(&request).expect("request");
+    assert_eq!(response.id, "my-unique-id");
+    assert_eq!(response.v, PROTOCOL_VERSION);
+}
+
+// --- Commands round-trip ----------------------------------------------------
+
+#[test]
+fn full_command_roundtrip() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+
+    // remember
+    let remembered = daemon.request(
+        command::REMEMBER,
+        serde_json::json!({
+            "type": "decision",
+            "title": "Adopt FTS5",
+            "content": "Locus uses SQLite FTS5 for full-text search",
+            "importance": 80,
+        }),
+    );
+    assert!(remembered.ok);
+    let id = remembered.payload.expect("payload")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    // search
+    let searched = daemon.request(command::SEARCH, serde_json::json!({ "text": "FTS5" }));
+    let payload = searched.payload.expect("search payload");
+    assert_eq!(payload["count"], 1);
+
+    // context
+    let context = daemon.request(command::CONTEXT, serde_json::json!({ "text": "search" }));
+    let brief = context.payload.expect("context payload")["brief"]
+        .as_str()
+        .expect("brief")
+        .to_string();
+    assert!(brief.contains("FTS5"));
+
+    // reindex
+    let reindexed = daemon.request(command::REINDEX, serde_json::Value::Null);
+    assert!(reindexed.ok);
+
+    // forget
+    let forgotten = daemon.request(command::FORGET, serde_json::json!({ "id": id }));
+    assert!(forgotten.ok);
+
+    // gone
+    let after = daemon.request(command::SEARCH, serde_json::json!({ "text": "FTS5" }));
+    assert_eq!(after.payload.expect("payload")["count"], 0);
+}
+
+// --- Security ---------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn filesystem_permissions_are_restrictive() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    // Touch the store so the DB file exists.
+    daemon.request(
+        command::REMEMBER,
+        serde_json::json!({ "type": "fact", "title": "x", "content": "y" }),
+    );
+
+    let mode = |p: &std::path::Path| {
+        std::fs::metadata(p)
+            .unwrap_or_else(|e| panic!("metadata {}: {e}", p.display()))
+            .permissions()
+            .mode()
+            & 0o777
+    };
+
+    assert_eq!(
+        mode(daemon.paths.data_dir()),
+        0o700,
+        "data dir must be 0700"
+    );
+    assert_eq!(
+        mode(daemon.paths.endpoint().socket_file().expect("socket")),
+        0o600,
+        "socket must be 0600"
+    );
+    assert_eq!(mode(&daemon.paths.db_file()), 0o600, "db must be 0600");
+}
+
+#[test]
+fn endpoint_is_local_only() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+    // The transport is a Unix domain socket / named pipe — never a TCP port.
+    assert_eq!(daemon.paths.endpoint().transport(), "unix-socket");
+    let socket = daemon.paths.endpoint().socket_file().expect("socket path");
+    assert!(socket.starts_with(daemon.paths.data_dir()));
+}
