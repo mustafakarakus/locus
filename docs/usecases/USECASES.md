@@ -1899,7 +1899,7 @@ drop-on-backpressure channel; a slow or hung viz client must not stall
 
 ## U-017: Session Compaction Capture
 
-Status: Backlog  
+Status: Done  
 Priority: P1  
 Depends On: U-004, U-006, U-007, U-011, U-015  
 Blocks: None
@@ -1930,72 +1930,72 @@ lifecycle event to a single internal call into `locus-core`.
 
 ### Key decisions
 
-- [ ] Extraction is rule-based and deterministic — no LLM dependency in the
+- [x] Extraction is rule-based and deterministic — no LLM dependency in the
       default capture path. Deterministic means the same compacted text always
       yields the same memories, regardless of which host or model produced it
       (a shared store must not vary per model).
-- [ ] Extraction is zero-cost in the capture path (microseconds, local).
-- [ ] Capture writes discrete typed memories through the existing store write
+- [x] Extraction is zero-cost in the capture path (microseconds, local).
+- [x] Capture writes discrete typed memories through the existing store write
       path (namespace, redaction, dedupe) — never a raw summary blob.
 - [ ] Optional LLM refinement may be added later behind a flag, never as a
       default dependency.
 
 ### Extractor scope
 
-- [ ] Split the compacted summary into sentences.
-- [ ] Classify each sentence into a `MemoryType` via cue-word patterns:
+- [x] Split the compacted summary into sentences.
+- [x] Classify each sentence into a `MemoryType` via cue-word patterns:
       decisions ("use X", "choose X", "standardize on X"), preferences
       ("prefer X", "avoid X"), constraints ("must not", "requires"), tasks
       ("in progress", "next step"), fallback to `Fact`/`Note`.
-- [ ] Title = leading phrase of the sentence; content = the sentence.
-- [ ] Importance by cue word strength (Decision/Preference higher, Note/Task
+- [x] Title = leading phrase of the sentence; content = the sentence.
+- [x] Importance by cue word strength (Decision/Preference higher, Note/Task
       lower).
-- [ ] Extract entities via the existing `normalize_entities` plus simple
+- [x] Extract entities via the existing `normalize_entities` plus simple
       proper-noun/camelCase tokens.
-- [ ] Dedupe candidates against the shared store using the existing
+- [x] Dedupe candidates against the shared store using the existing
       `normalize_for_dedupe` + `near_duplicate` logic so repeat captures do not
       multiply memories.
-- [ ] Must handle host variance: the extractor normalizes summaries regardless
+- [x] Must handle host variance: the extractor normalizes summaries regardless
       of which host (Cursor/Claude Code/Copilot/DeepSeek) produced them. The
       extractor lives in `locus-core`; adapters only forward the text.
 
 ### Capture path scope
 
-- [ ] Add a `capture` internal call in `locus-core` that takes compacted text
+- [x] Add a `capture` internal call in `locus-core` that takes compacted text
       plus a namespace and writes extracted memories.
-- [ ] Add host-specific adapters (mirroring the U-015 adapter pattern) that map
+- [x] Add host-specific adapters (mirroring the U-015 adapter pattern) that map
       each host's compaction lifecycle event to the single `capture` call.
-- [ ] Extraction runs on the compacted summary only; raw chat transcripts are
+- [x] Extraction runs on the compacted summary only; raw chat transcripts are
       never captured.
-- [ ] Capture writes go through the same namespace scoping and U-011 redaction
+- [x] Capture writes go through the same namespace scoping and U-011 redaction
       as any other write.
-- [ ] Capture is bounded in cost: extract only durable categories
+- [x] Capture is bounded in cost: extract only durable categories
       (Decision/Preference/Constraint), skip session-transient task state.
-- [ ] Capture must not block the host's compaction; it is fire-and-forget.
+- [x] Capture must not block the host's compaction; it is fire-and-forget.
 
 ### Security scope
 
-- [ ] Extracted memories pass through U-011 write-time redaction.
-- [ ] Namespace isolation: captures are scoped to the session's namespace and
+- [x] Extracted memories pass through U-011 write-time redaction.
+- [x] Namespace isolation: captures are scoped to the session's namespace and
       never leak across namespaces.
-- [ ] No network calls; capture is fully local.
+- [x] No network calls; capture is fully local.
 
 ### Tests
 
-- [ ] Compaction text produces the expected typed memories (decisions,
+- [x] Compaction text produces the expected typed memories (decisions,
       preferences, constraints).
-- [ ] Same input always produces identical output (deterministic).
-- [ ] Repeat capture of the same session does not duplicate memories.
-- [ ] Host-specific adapter forwards its compaction payload correctly.
-- [ ] Capture output matches the store write path (namespace + redaction
+- [x] Same input always produces identical output (deterministic).
+- [x] Repeat capture of the same session does not duplicate memories.
+- [x] Host-specific adapter forwards its compaction payload correctly.
+- [x] Capture output matches the store write path (namespace + redaction
       applied).
-- [ ] Unrelated/cue-word-free summary falls back to `Fact`/`Note`, never drops
+- [x] Unrelated/cue-word-free summary falls back to `Fact`/`Note`, never drops
       silently.
-- [ ] Capture is read-only-safe: it never mutates beyond its own writes.
-- [ ] Capture latency stays within the single-save p95 budget.
-- [ ] Captured memories are retrievable by a second agent via the shared
+- [x] Capture is read-only-safe: it never mutates beyond its own writes.
+- [x] Capture latency stays within the single-save p95 budget.
+- [x] Captured memories are retrievable by a second agent via the shared
       `ContextBrief` path.
-- [ ] No secrets present in captured memories.
+- [x] No secrets present in captured memories.
 
 ### Out of Scope
 
@@ -2007,9 +2007,9 @@ lifecycle event to a single internal call into `locus-core`.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Extractor heuristics documented.
-- [ ] Adapter approach documented (mirrors U-015).
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Extractor heuristics documented.
+- [x] Adapter approach documented (mirrors U-015).
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.

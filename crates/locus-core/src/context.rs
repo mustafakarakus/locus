@@ -129,6 +129,7 @@ fn category_for(memory_type: MemoryType) -> Category {
     match memory_type {
         MemoryType::Decision => Category::Decisions,
         MemoryType::Preference => Category::Preferences,
+        MemoryType::Constraint => Category::Constraints,
         MemoryType::Task => Category::Tasks,
         MemoryType::Fact
         | MemoryType::Bug
@@ -162,7 +163,7 @@ fn clip_chars(input: &str, max_chars: usize) -> String {
     format!("{}...", clipped)
 }
 
-fn normalize_for_dedupe(input: &str) -> String {
+pub(crate) fn normalize_for_dedupe(input: &str) -> String {
     input
         .chars()
         .map(|ch| {
@@ -211,7 +212,7 @@ fn dedupe_items(items: &mut Vec<BriefItem>) {
     *items = kept;
 }
 
-fn near_duplicate(left: &str, right: &str) -> bool {
+pub(crate) fn near_duplicate(left: &str, right: &str) -> bool {
     if left == right {
         return true;
     }

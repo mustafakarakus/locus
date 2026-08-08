@@ -14,6 +14,7 @@ pub const CONFLICT_ELIGIBLE_TYPES: &[MemoryType] = &[
     MemoryType::Decision,
     MemoryType::Architecture,
     MemoryType::Preference,
+    MemoryType::Constraint,
 ];
 
 /// Minimum number of shared significant words required to flag two memories as

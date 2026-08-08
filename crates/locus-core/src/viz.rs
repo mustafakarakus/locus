@@ -87,23 +87,50 @@ const RENDERER_JS: &str = r##"
   var edges = [];
   var maxAccess = 1;
   var selected = null;
+  var hoveredId = null;
   var W = window.innerWidth, H = window.innerHeight;
   var svg, view, linkLayer, nodeLayer;
-  var nodeEls = {}, linkEls = {};
+  var nodeEls = {}, hitEls = {}, linkEls = {};
   var cam = { x: 0, y: 0, k: 1 };
   var autoFit = true, settleFrames = 0, userControlled = false;
   var drag = null, dragMoved = false;
 
+  // Absolute, per-visit dot growth: base radius with a logarithmic ramp so a
+  // node keeps getting bigger every time it is visited, but never beyond
+  // MAX_DOT_RADIUS. Growth is independent of the busiest node, so one very hot
+  // node can not shrink its neighbours. The draw() screen clamp guarantees a
+  // heavily visited node can never cover the view even fully zoomed in.
+  var BASE_DOT_RADIUS = 12;
+  var DOT_GROWTH = 9;
+  var MAX_DOT_RADIUS = 64;
   function radius(n) {
-    var t = maxAccess > 1 ? (n.acc || 0) / maxAccess : 0;
-    return 6 + 26 * Math.sqrt(t);
+    return Math.min(MAX_DOT_RADIUS, BASE_DOT_RADIUS + DOT_GROWTH * Math.log10(1 + (n.acc || 0)));
   }
-  var NS_HUES = [210, 340, 150, 45, 275, 10, 190, 120];
+  // Distribute namespace hues across the whole wheel using the golden angle,
+  // so many namespaces stay visually distinct. Hues are assigned per data set
+  // in sorted namespace order (see buildNsHues), guaranteeing adjacent
+  // namespaces land far apart on the wheel instead of colliding.
+  var GOLDEN_ANGLE = 137.508;
+  var nsHues = {};
+  function buildNsHues() {
+    nsHues = {};
+    var names = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var ns = nodes[i].ns || "global";
+      if (names.indexOf(ns) === -1) names.push(ns);
+    }
+    names.sort();
+    for (var k = 0; k < names.length; k++) {
+      if (names[k] === "global") continue;
+      nsHues[names[k]] = Math.round((k * GOLDEN_ANGLE) % 360);
+    }
+  }
   function nsHue(ns) {
     if (!ns || ns === "global") return -1;
+    if (nsHues[ns] !== undefined) return nsHues[ns];
     var h = 0;
     for (var i = 0; i < ns.length; i++) h = (h * 31 + ns.charCodeAt(i)) >>> 0;
-    return NS_HUES[h % NS_HUES.length];
+    return Math.round((h * GOLDEN_ANGLE) % 360);
   }
   function color(n) {
     var now = Date.now() / 1000;
@@ -133,6 +160,7 @@ const RENDERER_JS: &str = r##"
     });
     lines.push('<div>node size = retrieval frequency</div>');
     lines.push('<div>brighter = more recently touched</div>');
+    lines.push('<div>hover to inspect &middot; click to pin</div>');
     legendEl.innerHTML = lines.join("");
   }
   function fitCamera() {
@@ -159,6 +187,7 @@ const RENDERER_JS: &str = r##"
     linkLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
     nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
     nodeEls = {};
+    hitEls = {};
     linkEls = {};
     svg.appendChild(view);
     view.appendChild(linkLayer);
@@ -169,7 +198,37 @@ const RENDERER_JS: &str = r##"
       var c = e.target.closest && e.target.closest("circle");
       if (!c) return;
       var n = nodeMap[c.getAttribute("data-id")];
-      if (n) select(n);
+      if (!n) return;
+      if (selected && selected.id === n.id) {
+        // Clicking the pinned node again unpins it.
+        selected = null;
+        hidePanel();
+      } else {
+        select(n);
+      }
+    });
+    // Hover reveals the panel immediately; clicking pins it (the panel stays
+    // open even after the pointer leaves).
+    nodeLayer.addEventListener("pointerover", function (e) {
+      var c = e.target.closest && e.target.closest("circle");
+      if (!c) return;
+      var n = nodeMap[c.getAttribute("data-id")];
+      if (n && n.id !== hoveredId) {
+        hoveredId = n.id;
+        showPanel(n);
+      }
+    });
+    nodeLayer.addEventListener("pointerout", function (e) {
+      hoveredId = null;
+      // relatedTarget is what the pointer moved onto. Only hide when leaving
+      // nodes entirely (not onto another node, whose pointerover reopens the
+      // panel). If a node is pinned, revert the panel to it instead of hiding.
+      var rt = e.relatedTarget;
+      var onto = rt && rt.closest ? rt.closest("circle") : null;
+      if (!onto) {
+        if (selected) showPanel(selected);
+        else hidePanel();
+      }
     });
     svg.addEventListener("pointerdown", function (e) {
       dragMoved = false;
@@ -229,6 +288,7 @@ const RENDERER_JS: &str = r##"
     fit();
     autoFit = true;
     settleFrames = 0;
+    buildNsHues();
     buildLegend();
   }
   function scatter() {
@@ -311,7 +371,10 @@ const RENDERER_JS: &str = r##"
       if (!a || !b) continue;
       var key = e.source + "|" + e.target;
       usedLinks[key] = true;
-      var active = selected && (e.source === selected.id || e.target === selected.id);
+      // Hover takes priority over the pinned node so hovering any node (even
+      // after pinning one) reveals its connections.
+      var focus = hoveredId || (selected ? selected.id : null);
+      var active = focus && (e.source === focus || e.target === focus);
       var ln = linkEls[key];
       if (!ln) {
         ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -327,23 +390,48 @@ const RENDERER_JS: &str = r##"
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i];
       usedNodes[n.id] = true;
+      // Hit target first (underneath): transparent, at least ~16px on screen so
+      // even tiny dots are easy to hover/touch. Screen size is zoom-invariant
+      // because the whole view group is scaled by cam.k.
+      var ht = hitEls[n.id];
+      if (!ht) {
+        ht = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        ht.setAttribute("data-id", n.id);
+        ht.setAttribute("fill", "transparent");
+        ht.setAttribute("stroke", "none");
+        ht.setAttribute("cursor", "pointer");
+        hitEls[n.id] = ht;
+        nodeLayer.appendChild(ht);
+      }
+      var hitR = Math.max(18 / cam.k, 0);
+      ht.setAttribute("cx", n.x); ht.setAttribute("cy", n.y); ht.setAttribute("r", hitR);
+      ht.setAttribute("opacity", n.fade === undefined ? 1 : n.fade);
+
       var c = nodeEls[n.id];
       if (!c) {
         c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         c.setAttribute("data-id", n.id);
         c.setAttribute("stroke-width", 2);
+        c.setAttribute("pointer-events", "none");
         nodeEls[n.id] = c;
         nodeLayer.appendChild(c);
       }
       var r = radius(n) * (1 + (n.pulse || 0) * 0.5);
-      c.setAttribute("cx", n.x); c.setAttribute("cy", n.y); c.setAttribute("r", r);
+      // Dots never shrink below ~5px on screen (so every node stays reachable
+      // when zoomed out) and never exceed ~120px on screen (so a heavily
+      // visited node can not cover the view, even fully zoomed in).
+      var visR = Math.min(Math.max(r, 5 / cam.k), 120 / cam.k);
+      var isSel = selected && selected.id === n.id;
+      var isHov = hoveredId === n.id;
+      c.setAttribute("cx", n.x); c.setAttribute("cy", n.y); c.setAttribute("r", visR);
       c.setAttribute("fill", color(n));
-      c.setAttribute("stroke", selected && selected.id === n.id ? "#f0f6fc" : "#30363d");
-      c.setAttribute("stroke-width", selected && selected.id === n.id ? 3 : 2);
+      c.setAttribute("stroke", isSel ? "#f0f6fc" : isHov ? "#ffd33d" : "#30363d");
+      c.setAttribute("stroke-width", isSel || isHov ? 3 : 2);
       c.setAttribute("opacity", n.fade === undefined ? 1 : n.fade);
     }
     for (var key in linkEls) if (!usedLinks[key]) { linkEls[key].remove(); delete linkEls[key]; }
     for (var id in nodeEls) if (!usedNodes[id]) { nodeEls[id].remove(); delete nodeEls[id]; }
+    for (var id in hitEls) if (!usedNodes[id]) { hitEls[id].remove(); delete hitEls[id]; }
   }
   function fmtTs(ts) {
     var d = new Date(ts * 1000);
@@ -354,9 +442,7 @@ const RENDERER_JS: &str = r##"
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch];
     });
   }
-  function select(n) {
-    selected = n;
-    panel.style.display = "block";
+  function fillPanel(n) {
     panel.innerHTML =
       '<h2>' + esc(n.title) + '</h2>' +
       '<div><span class="badge">' + esc(n.type) + '</span>' +
@@ -366,6 +452,17 @@ const RENDERER_JS: &str = r##"
       '<p><b>created</b> ' + fmtTs(n.created) + '</p>' +
       '<p><b>updated</b> ' + fmtTs(n.updated) + '</p>' +
       (n.entities.length ? '<p><b>entities</b> ' + n.entities.map(esc).join(", ") + '</p>' : "");
+  }
+  function showPanel(n) {
+    panel.style.display = "block";
+    fillPanel(n);
+  }
+  function hidePanel() {
+    panel.style.display = "none";
+  }
+  function select(n) {
+    selected = n;
+    showPanel(n);
   }
   function refresh() {
     fetch("/data").then(function (r) { return r.json(); }).then(setData);

@@ -44,6 +44,7 @@ pub mod command {
     pub const STOP: &str = "stop";
     pub const CONFLICTS: &str = "conflicts";
     pub const EVENTS: &str = "events";
+    pub const CAPTURE: &str = "capture";
 }
 
 /// A single IPC request.
@@ -253,6 +254,26 @@ pub struct ConflictsRequest {
 pub struct ConflictsResponse {
     pub count: usize,
     pub conflicts: Vec<crate::conflict::ConflictRecord>,
+}
+
+/// Payload for the `capture` command (U-017).
+///
+/// `text` is the host's compacted session summary; `namespace` scopes the
+/// captured memories (derived by the CLI adapter from the host payload, e.g.
+/// `cwd`). Extraction and writes run on the daemon's single-writer path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureRequest {
+    #[serde(default)]
+    pub namespace: Option<String>,
+    pub text: String,
+}
+
+/// Response payload for the `capture` command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureResponse {
+    pub written: usize,
+    pub skipped_tasks: usize,
+    pub skipped_duplicates: usize,
 }
 
 /// Response payload for the `ping` command.

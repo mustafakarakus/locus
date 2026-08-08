@@ -7,10 +7,13 @@ use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
+use locus_core::capture::{adapter_for as capture_adapter_for, CaptureTrigger};
 use locus_core::context::NO_RELEVANT_MEMORY;
 use locus_core::hooks::{adapter_for, inject_context, DefaultQueryStrategy, InjectTrigger};
 use locus_core::ipc::paths::Paths;
-use locus_core::ipc::protocol::{command, RememberRequest, RememberResponse, Request};
+use locus_core::ipc::protocol::{
+    command, CaptureResponse, RememberRequest, RememberResponse, Request,
+};
 use locus_core::ipc::DaemonClient;
 use locus_core::store::Store;
 
@@ -71,6 +74,18 @@ enum HookAction {
         #[arg(long)]
         json: bool,
     },
+    /// Capture a host compaction summary into typed memories (U-017)
+    Capture {
+        /// Host adapter to use (default: claude-code)
+        #[arg(long, default_value = "claude-code")]
+        host: String,
+        /// Override the namespace (default: derived from the host payload `cwd`)
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Read the compaction payload from this file instead of stdin
+        #[arg(long, value_name = "FILE")]
+        file: Option<PathBuf>,
+    },
 }
 
 impl HookCmd {
@@ -87,6 +102,11 @@ impl HookCmd {
                 token_budget,
                 json,
             } => run_context(host, namespace, query, strategy, token_budget, json),
+            HookAction::Capture {
+                host,
+                namespace,
+                file,
+            } => run_capture(host, namespace, file),
         }
     }
 }
@@ -293,6 +313,90 @@ fn run_context(
     }
 
     Ok(())
+}
+
+/// Run the U-017 capture path for a host compaction event.
+///
+/// Reads the host's compaction payload (JSON on stdin, or `--file`), translates
+/// it through the chosen capture adapter, and forwards the resulting
+/// [`CaptureTrigger`] to the daemon over IPC, where extraction and writes run on
+/// the single-writer path. Failures degrade gracefully: the error goes to
+/// stderr and the host event is never blocked (fire-and-forget).
+fn run_capture(
+    host: String,
+    namespace_override: Option<String>,
+    file: Option<PathBuf>,
+) -> Result<()> {
+    let mut payload = String::new();
+    match file {
+        Some(path) => {
+            payload = fs::read_to_string(&path)
+                .with_context(|| format!("failed reading {}", path.display()))?;
+        }
+        None => {
+            io::stdin()
+                .read_to_string(&mut payload)
+                .context("failed to read capture payload from stdin")?;
+        }
+    }
+
+    let mut trigger: CaptureTrigger = match capture_adapter_for(&host).map_err(anyhow::Error::from)
+    {
+        Ok(adapter) => adapter
+            .translate(payload.trim())
+            .map_err(anyhow::Error::from)?,
+        Err(err) => {
+            eprintln!("locus hook capture: {err}");
+            return Ok(());
+        }
+    };
+    if let Some(ns) = namespace_override {
+        trigger.namespace = Some(ns);
+    }
+
+    let paths = Paths::resolve()?;
+    let client = DaemonClient::new(paths.endpoint().clone());
+    let daemon_bin = locate_daemon_binary()?;
+    match client
+        .connect_or_spawn(&daemon_bin, paths.data_dir())
+        .map_err(|e| anyhow!(e.to_string()))
+    {
+        Ok(()) => {}
+        Err(err) => {
+            eprintln!("locus hook capture: {err}");
+            return Ok(());
+        }
+    }
+
+    let payload = serde_json::to_value(&locus_core::ipc::protocol::CaptureRequest {
+        namespace: trigger.namespace.clone(),
+        text: trigger.text.clone(),
+    })?;
+    let req = Request::new("capture-hook".to_string(), command::CAPTURE, payload);
+
+    match client.request(&req) {
+        Ok(resp) => {
+            if !resp.ok {
+                let msg = resp
+                    .error
+                    .map(|e| e.message)
+                    .unwrap_or_else(|| "capture request failed".to_string());
+                eprintln!("locus hook capture: {msg}");
+                return Ok(());
+            }
+            let decoded: CaptureResponse =
+                serde_json::from_value(resp.payload.unwrap_or_else(|| serde_json::json!({})))?;
+            println!(
+                "captured {} memory(s) (skipped {} tasks, {} duplicates)",
+                decoded.written, decoded.skipped_tasks, decoded.skipped_duplicates
+            );
+            Ok(())
+        }
+        Err(err) => {
+            eprintln!("locus hook capture: {err}");
+            Ok(())
+        }
+    }
 }
 
 fn build_trigger(
