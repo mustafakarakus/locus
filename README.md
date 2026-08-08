@@ -4,6 +4,8 @@ Locus is a local-first, Rust-based long-term memory layer for AI coding agents.
 
 Every AI tool you use forgets you the moment you close it or switch to another one. Cursor doesn't know what you told Claude Code. Claude Code doesn't know what you told Cline yesterday. Locus sits underneath all of them as one shared memory — the decisions, constraints, and context of your project, remembered once and available to whichever tool you're using, without your code or conversations ever leaving your machine.
 
+https://github.com/user-attachments/assets/74e5a4c7-7263-42c1-bda3-5c1faf129d4d
+
 Locus remembers:
 
 - architectural decisions
