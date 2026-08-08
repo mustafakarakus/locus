@@ -12,8 +12,11 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::Stream;
 use locus_core::ipc::paths::Paths;
-use locus_core::ipc::protocol::{command, error_code, Request, Response, PROTOCOL_VERSION};
+use locus_core::ipc::protocol::{
+    command, error_code, MemoryEvent, MemoryEventKind, Request, Response, PROTOCOL_VERSION,
+};
 use locus_core::ipc::DaemonClient;
+use locus_core::store::Store;
 use tempfile::TempDir;
 
 /// A running daemon bound to a private temp data directory.
@@ -131,6 +134,36 @@ fn raw_exchange(paths: &Paths, request_bytes: &[u8]) -> Option<Vec<u8>> {
         None
     } else {
         Some(line)
+    }
+}
+
+/// Opens a raw connection and writes a single newline-delimited request.
+///
+/// Used by the live-event tests (U-016): after the subscription ack the daemon
+/// streams one `MemoryEvent` JSON line per event.
+fn raw_connect(paths: &Paths, request_bytes: &[u8]) -> Stream {
+    let name = paths.endpoint().to_name().expect("endpoint name");
+    let stream = Stream::connect(name).expect("connect to daemon");
+    let _ = stream.set_recv_timeout(Some(Duration::from_secs(5)));
+
+    {
+        let mut writer = &stream;
+        writer.write_all(request_bytes).expect("write request");
+        writer.write_all(b"\n").expect("write newline");
+        writer.flush().expect("flush");
+    }
+
+    stream
+}
+
+/// Reads the next newline-delimited line from a raw stream, stripping the
+/// newline. Returns `None` on EOF or timeout.
+fn read_line<R: BufRead>(reader: &mut R) -> Option<String> {
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => None,
+        Ok(_) => Some(line.trim_end_matches(['\r', '\n']).to_string()),
+        Err(_) => None,
     }
 }
 
@@ -669,5 +702,185 @@ fn debug_logs_do_not_contain_secrets() {
     assert!(
         !log_text.contains("Deploy token"),
         "log must not contain memory content"
+    );
+}
+
+// --- Live events & access tracking (U-016) ---------------------------------
+
+#[test]
+fn events_stream_reports_created_and_searched() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+
+    let request = Request::new("evt", command::EVENTS, serde_json::json!({}));
+    let mut bytes = serde_json::to_vec(&request).expect("serialize events request");
+    bytes.push(b'\n');
+    let stream = raw_connect(&daemon.paths, &bytes);
+    let mut reader = BufReader::new(&stream);
+
+    // The subscription ack arrives first.
+    let ack_line = read_line(&mut reader).expect("subscription ack");
+    let ack: Response = serde_json::from_str(&ack_line).expect("ack json");
+    assert!(ack.ok, "events subscription must succeed");
+    assert_eq!(ack.payload.expect("ack payload")["subscribed"], true);
+
+    // A remember produces a `memory_created` event.
+    let remembered = daemon.request(
+        command::REMEMBER,
+        serde_json::json!({
+            "type": "fact",
+            "title": "Event target",
+            "content": "live event streaming test memory",
+        }),
+    );
+    assert!(remembered.ok);
+    let id = remembered.payload.expect("remember payload")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let created_line = read_line(&mut reader).expect("created event");
+    let created: MemoryEvent = serde_json::from_str(&created_line).expect("created event json");
+    assert_eq!(created.kind, MemoryEventKind::Created);
+    assert_eq!(created.memory_id, id);
+    assert_eq!(created.access_delta, 0);
+    assert_eq!(created.title, "Event target");
+
+    // A search produces a `memory_searched` event for the surfaced hit.
+    let searched = daemon.request(command::SEARCH, serde_json::json!({ "text": "event" }));
+    assert!(searched.ok);
+
+    let searched_line = read_line(&mut reader).expect("searched event");
+    let searched_event: MemoryEvent =
+        serde_json::from_str(&searched_line).expect("searched event json");
+    assert_eq!(searched_event.kind, MemoryEventKind::Searched);
+    assert_eq!(searched_event.memory_id, id);
+    assert_eq!(searched_event.access_delta, 1);
+}
+
+#[test]
+fn events_stream_reports_used_on_context() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+
+    daemon.request(
+        command::REMEMBER,
+        serde_json::json!({
+            "type": "decision",
+            "title": "Context event",
+            "content": "context brief memory for live event test",
+        }),
+    );
+
+    let request = Request::new("evt", command::EVENTS, serde_json::json!({}));
+    let mut bytes = serde_json::to_vec(&request).expect("serialize events request");
+    bytes.push(b'\n');
+    let stream = raw_connect(&daemon.paths, &bytes);
+    let mut reader = BufReader::new(&stream);
+
+    let ack_line = read_line(&mut reader).expect("subscription ack");
+    let ack: Response = serde_json::from_str(&ack_line).expect("ack json");
+    assert!(ack.ok);
+
+    let context = daemon.request(command::CONTEXT, serde_json::json!({ "text": "context" }));
+    assert!(context.ok);
+
+    let used_line = read_line(&mut reader).expect("used event");
+    let used: MemoryEvent = serde_json::from_str(&used_line).expect("used event json");
+    assert_eq!(used.kind, MemoryEventKind::Used);
+    assert_eq!(used.title, "Context event");
+    assert_eq!(used.access_delta, 1);
+}
+
+#[test]
+fn search_records_access_on_surfaced_memories() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+
+    let remembered = daemon.request(
+        command::REMEMBER,
+        serde_json::json!({
+            "type": "fact",
+            "title": "Access target",
+            "content": "access tracking probe memory",
+        }),
+    );
+    assert!(remembered.ok);
+    let id = remembered.payload.expect("remember payload")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let store = Store::open_at(daemon.paths.db_file()).expect("open store");
+    assert_eq!(
+        store.get_memory_by_id(&id).expect("memory").access_count,
+        0,
+        "a fresh memory starts with zero accesses"
+    );
+
+    // Searching surfaces the memory; the writer fire-and-forgets the bump.
+    daemon.request(command::SEARCH, serde_json::json!({ "text": "access" }));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let memory = store.get_memory_by_id(&id).expect("memory");
+        if memory.access_count >= 1 {
+            assert!(
+                memory.last_accessed_at.is_some(),
+                "last_accessed_at must be stamped on access"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "access tracking was never recorded"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Context also surfaces the memory and bumps access.
+    daemon.request(command::CONTEXT, serde_json::json!({ "text": "access" }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let memory = store.get_memory_by_id(&id).expect("memory");
+        if memory.access_count >= 2 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "context did not record access");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn hung_events_subscriber_does_not_block_requests() {
+    let mut daemon = TestDaemon::start(&["--no-idle-exit"]);
+    daemon.request(
+        command::REMEMBER,
+        serde_json::json!({ "type": "fact", "title": "probe", "content": "subscriber probe" }),
+    );
+
+    // Open an events subscription and never read from it: this simulates a
+    // hung live-view client that neither drains nor disconnects.
+    let request = Request::new("evt", command::EVENTS, serde_json::json!({}));
+    let mut bytes = serde_json::to_vec(&request).expect("serialize events request");
+    bytes.push(b'\n');
+    let _stream = raw_connect(&daemon.paths, &bytes);
+
+    // Requests must keep succeeding while the subscriber queue sits full.
+    for _ in 0..64 {
+        let search = daemon.request(command::SEARCH, serde_json::json!({ "text": "probe" }));
+        assert!(search.ok, "search must succeed with a saturated subscriber");
+        let remember = daemon.request(
+            command::REMEMBER,
+            serde_json::json!({ "type": "fact", "title": "more", "content": "more probe" }),
+        );
+        assert!(
+            remember.ok,
+            "remember must succeed with a saturated subscriber"
+        );
+    }
+
+    // Shutdown must not block on the unread subscriber.
+    daemon.request(command::STOP, serde_json::json!({}));
+    assert!(
+        daemon.wait_until_exited(Duration::from_secs(5)),
+        "daemon failed to shut down with an unread subscriber"
     );
 }

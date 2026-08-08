@@ -1,15 +1,17 @@
 //! Per-connection request handling and command dispatch.
 
 use std::io::BufReader;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
 
 use interprocess::local_socket::prelude::*;
 
 use locus_core::context::ContextBriefOptions;
 use locus_core::ipc::protocol::{
     command, error_code, ConflictsRequest, ConflictsResponse, ContextRequest, ContextResponse,
-    ForgetRequest, ForgetResponse, PingResponse, ReindexResponse, RememberRequest,
-    RememberResponse, Request, Response, SearchRequest, SearchResponse, Warning, MAX_MESSAGE_BYTES,
-    PROTOCOL_VERSION,
+    EventsRequest, EventsResponse, ForgetRequest, ForgetResponse, PingResponse, ReindexResponse,
+    RememberRequest, RememberResponse, Request, Response, SearchRequest, SearchResponse, Warning,
+    MAX_MESSAGE_BYTES, PROTOCOL_VERSION,
 };
 use locus_core::ipc::wire::{read_message, write_message, ReadOutcome};
 use locus_core::memory::{MemoryType, NewMemory};
@@ -17,10 +19,24 @@ use locus_core::search::Query;
 use locus_core::Error;
 
 use crate::server::Shared;
-use crate::writer::{WriterOk, WriterOp};
+use crate::writer::{memory_event, WriterOk, WriterOp};
 
 /// Close a connection after this many malformed messages in a row.
 const MAX_MALFORMED: u32 = 3;
+
+/// How often the live event stream wakes to check for daemon shutdown and how
+/// long a single event write may block before the peer is considered hung.
+const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Outcome of dispatching one request.
+enum Dispatch {
+    /// A normal request/response exchange to write to the connection.
+    Response(Response),
+    /// The `events` request: write the ack, then stream live events until the
+    /// connection closes or the daemon shuts down.
+    Events(Response),
+}
 
 /// Reads and answers requests on a single connection until it closes.
 pub fn handle_connection(shared: &Shared, stream: LocalSocketStream) {
@@ -29,21 +45,28 @@ pub fn handle_connection(shared: &Shared, stream: LocalSocketStream) {
 
     loop {
         match read_message(&mut reader, MAX_MESSAGE_BYTES) {
-            Ok(ReadOutcome::Message(bytes)) => {
-                let response = dispatch(shared, &bytes, &mut malformed);
-                if !write_response(&stream, &response) {
+            Ok(ReadOutcome::Message(bytes)) => match dispatch(shared, &bytes, &mut malformed) {
+                Dispatch::Response(response) => {
+                    if !write_response(&stream, &response) {
+                        return;
+                    }
+                    if malformed >= MAX_MALFORMED {
+                        shared
+                            .log()
+                            .warn("closing connection after repeated malformed input");
+                        return;
+                    }
+                    if shared.is_shutdown() {
+                        return;
+                    }
+                }
+                Dispatch::Events(ack) => {
+                    if write_response(&stream, &ack) {
+                        handle_events(shared, &stream);
+                    }
                     return;
                 }
-                if malformed >= MAX_MALFORMED {
-                    shared
-                        .log()
-                        .warn("closing connection after repeated malformed input");
-                    return;
-                }
-                if shared.is_shutdown() {
-                    return;
-                }
-            }
+            },
             Ok(ReadOutcome::TooLarge) => {
                 let response = Response::error(
                     "",
@@ -68,28 +91,98 @@ fn write_response(stream: &LocalSocketStream, response: &Response) -> bool {
     write_message(&mut writer, &bytes).is_ok()
 }
 
-fn dispatch(shared: &Shared, bytes: &[u8], malformed: &mut u32) -> Response {
+fn write_event(stream: &LocalSocketStream, event: &locus_core::ipc::protocol::MemoryEvent) -> bool {
+    let bytes = match serde_json::to_vec(event) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    let mut writer = stream;
+    write_message(&mut writer, &bytes).is_ok()
+}
+
+/// Streams live memory events to a subscriber until the connection breaks or
+/// the daemon shuts down. A hung peer (one that stops reading) fails its write
+/// after [`EVENT_WRITE_TIMEOUT`] and is unsubscribed.
+fn handle_events(shared: &Shared, stream: &LocalSocketStream) {
+    let _ = stream.set_send_timeout(Some(EVENT_SEND_TIMEOUT));
+    shared.begin_request();
+    let (subscriber_id, rx) = shared.events().subscribe();
+    loop {
+        match rx.recv_timeout(EVENT_POLL_INTERVAL) {
+            Ok(event) => {
+                if !write_event(stream, &event) {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if shared.is_shutdown() {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    shared.events().unsubscribe(subscriber_id);
+    shared.end_request();
+}
+
+/// Records access and publishes live events for memories that were surfaced.
+///
+/// Non-blocking on both paths: the writer op is fire-and-forget (never waited
+/// on) and [`EventBus::publish`] never blocks, so a slow live viewer cannot
+/// stall the request.
+fn surface(
+    shared: &Shared,
+    kind: locus_core::ipc::protocol::MemoryEventKind,
+    memories: &[locus_core::memory::Memory],
+) {
+    if memories.is_empty() {
+        return;
+    }
+    let ids = memories
+        .iter()
+        .map(|memory| memory.id.clone())
+        .collect::<Vec<_>>();
+    for memory in memories {
+        shared.events().publish(&memory_event(kind, memory, 1));
+    }
+    shared.writer().submit_async(WriterOp::RecordAccess(ids));
+}
+
+fn dispatch(shared: &Shared, bytes: &[u8], malformed: &mut u32) -> Dispatch {
     let request: Request = match serde_json::from_slice(bytes) {
         Ok(request) => request,
         Err(_) => {
             *malformed += 1;
-            return Response::error("", error_code::MALFORMED_JSON, "request was not valid JSON");
+            return Dispatch::Response(Response::error(
+                "",
+                error_code::MALFORMED_JSON,
+                "request was not valid JSON",
+            ));
         }
     };
     *malformed = 0;
 
     if request.v != PROTOCOL_VERSION {
-        return Response::error(
+        return Dispatch::Response(Response::error(
             request.id,
             error_code::UNSUPPORTED_VERSION,
             format!("unsupported protocol version: {}", request.v),
-        );
+        ));
+    }
+
+    if request.cmd == command::EVENTS {
+        if let Err(response) = parse_payload::<EventsRequest>(&request) {
+            return Dispatch::Response(*response);
+        }
+        let ack = ok(&request, &EventsResponse { subscribed: true });
+        return Dispatch::Events(ack);
     }
 
     shared.begin_request();
     let response = route(shared, &request);
     shared.end_request();
-    response
+    Dispatch::Response(response)
 }
 
 fn route(shared: &Shared, request: &Request) -> Response {
@@ -139,14 +232,21 @@ fn handle_search(shared: &Shared, request: &Request) -> Response {
         limit: payload.limit,
     };
 
-    match shared.store().search(query) {
-        Ok(hits) => ok(
-            request,
-            &SearchResponse {
-                count: hits.len(),
-                hits,
-            },
-        ),
+    match shared.store().retrieve(query) {
+        Ok(outcome) => {
+            surface(
+                shared,
+                locus_core::ipc::protocol::MemoryEventKind::Searched,
+                &outcome.memories,
+            );
+            ok(
+                request,
+                &SearchResponse {
+                    count: outcome.hits.len(),
+                    hits: outcome.hits,
+                },
+            )
+        }
         Err(err) => error_response(shared, request, err),
     }
 }
@@ -174,8 +274,15 @@ fn handle_context(shared: &Shared, request: &Request) -> Response {
         None => ContextBriefOptions::default(),
     };
 
-    match shared.store().context_brief(query, options) {
-        Ok(brief) => ok(request, &ContextResponse { brief }),
+    match shared.store().context_brief_with_memories(query, options) {
+        Ok((brief, memories)) => {
+            surface(
+                shared,
+                locus_core::ipc::protocol::MemoryEventKind::Used,
+                &memories,
+            );
+            ok(request, &ContextResponse { brief })
+        }
         Err(err) => error_response(shared, request, err),
     }
 }

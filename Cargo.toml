@@ -6,6 +6,7 @@ members = [
     "crates/locusd",
     "crates/locus-mcp",
     "crates/locus-testkit",
+    "crates/locus-viz",
 ]
 
 [workspace.package]

@@ -1740,7 +1740,7 @@ budget.
 
 ## U-016: Memory Visualization (Graph)
 
-Status: Backlog  
+Status: Done  
 Priority: P2  
 Depends On: U-002, U-003, U-006, U-011  
 Blocks: None
@@ -1776,100 +1776,100 @@ drop-on-backpressure channel; a slow or hung viz client must not stall
 
 ### Access tracking scope
 
-- [ ] Add `access_count` and `last_accessed_at` to the memories schema (or a
+- [x] Add `access_count` and `last_accessed_at` to the memories schema (or a
       per-memory stats table).
-- [ ] Bump `access_count` on the retrieval path whenever a memory is surfaced
+- [x] Bump `access_count` on the retrieval path whenever a memory is surfaced
       to a caller (search/context).
-- [ ] The bump must be cheap and non-blocking (fire-and-forget/batched), never
+- [x] The bump must be cheap and non-blocking (fire-and-forget/batched), never
       in the critical latency path of the search response.
-- [ ] Expose access stats through a read API so the graph can render
+- [x] Expose access stats through a read API so the graph can render
       "most visited" and "recently used" without a full scan.
-- [ ] Access stats must respect namespace isolation.
+- [x] Access stats must respect namespace isolation.
 
 ### Graph data scope
 
-- [ ] Build node set from memories.
-- [ ] Build edge set from shared entities and explicit links (no graph
+- [x] Build node set from memories.
+- [x] Build edge set from shared entities and explicit links (no graph
       database; relationships come from SQLite joins, per TECHSTACK).
-- [ ] Support namespace scoping for the graph.
-- [ ] Support `--expand <id>` to focus one memory and its immediate context.
-- [ ] Cap graph payloads (max nodes, max depth) so queries stay bounded.
-- [ ] Graph queries run on their own read-only SQLite connections, never on the
+- [x] Support namespace scoping for the graph.
+- [x] Support `--expand <id>` to focus one memory and its immediate context.
+- [x] Cap graph payloads (max nodes, max depth) so queries stay bounded.
+- [x] Graph queries run on their own read-only SQLite connections, never on the
       shared warm search connection and never through the single-writer queue.
-- [ ] Graph queries must not acquire long-lived locks; WAL snapshot isolation
+- [x] Graph queries must not acquire long-lived locks; WAL snapshot isolation
       means readers never block the single writer.
 
 ### Live event stream scope
 
-- [ ] Daemon emits events on retrieval and save (`memory_created`,
+- [x] Daemon emits events on retrieval and save (`memory_created`,
       `memory_searched`, `memory_used`).
-- [ ] Events go to a bounded broadcast channel; if a subscriber is slow or
+- [x] Events go to a bounded broadcast channel; if a subscriber is slow or
       absent, events are dropped, never queued without bound.
-- [ ] Event emission must not block the daemon's request handling.
-- [ ] `locus-viz` subscribes to the daemon event stream over the existing IPC
+- [x] Event emission must not block the daemon's request handling.
+- [x] `locus-viz` subscribes to the daemon event stream over the existing IPC
       transport.
 
 ### `locus graph` CLI scope
 
-- [ ] Implement `locus graph` (snapshot mode).
-- [ ] Implement `locus graph --live` (spawns `locus-viz`, opens browser).
-- [ ] Implement `locus graph --namespace <ns>`.
-- [ ] Implement `locus graph --expand <id>`.
-- [ ] Write the self-contained HTML page.
-- [ ] Inline or vendor all JS/CSS; no CDN references; page must work offline.
-- [ ] Do not serve the page over HTTP in snapshot mode.
-- [ ] Do not introduce network calls in snapshot mode.
+- [x] Implement `locus graph` (snapshot mode).
+- [x] Implement `locus graph --live` (spawns `locus-viz`, opens browser).
+- [x] Implement `locus graph --namespace <ns>`.
+- [x] Implement `locus graph --expand <id>`.
+- [x] Write the self-contained HTML page.
+- [x] Inline or vendor all JS/CSS; no CDN references; page must work offline.
+- [x] Do not serve the page over HTTP in snapshot mode.
+- [x] Do not introduce network calls in snapshot mode.
 
 ### `locus-viz` scope
 
-- [ ] Add `locus-viz` binary (separate crate or binary in the workspace).
-- [ ] Subscribes to daemon events over existing IPC.
-- [ ] Serves the HTML page over loopback HTTP (127.0.0.1 only) with SSE push.
-- [ ] Binds only on demand, while a viz client is connected.
-- [ ] Exits when the tab closes / no clients remain.
-- [ ] Must never run or linger when `locus graph` is not in live mode.
-- [ ] Rendering page live updates: new node fades in, visit counter ticks,
+- [x] Add `locus-viz` binary (separate crate or binary in the workspace).
+- [x] Subscribes to daemon events over existing IPC.
+- [x] Serves the HTML page over loopback HTTP (127.0.0.1 only) with SSE push.
+- [x] Binds only on demand, while a viz client is connected.
+- [x] Exits when the tab closes / no clients remain.
+- [x] Must never run or linger when `locus graph` is not in live mode.
+- [x] Rendering page live updates: new node fades in, visit counter ticks,
       usage pulses.
-- [ ] No telemetry, no analytics, no cloud calls from the page or server.
+- [x] No telemetry, no analytics, no cloud calls from the page or server.
 
 ### Security scope
 
-- [ ] Loopback-only listener; never binds a public interface.
-- [ ] Page output must not contain secrets (relies on U-011 redaction, which
+- [x] Loopback-only listener; never binds a public interface.
+- [x] Page output must not contain secrets (relies on U-011 redaction, which
       happens at write time).
-- [ ] Live mode only exists while explicitly requested; nothing runs by
+- [x] Live mode only exists while explicitly requested; nothing runs by
       default.
-- [ ] No REST API for memory; the viz HTTP listener serves the page and events
+- [x] No REST API for memory; the viz HTTP listener serves the page and events
       only, never write operations.
 
 ### Non-blocking guarantees
 
-- [ ] Concurrent search/save continues with p95 within budget while a graph
+- [x] Concurrent search/save continues with p95 within budget while a graph
       read is running (test).
-- [ ] A hung `locus-viz` client does not stall daemon requests (test).
-- [ ] Graph reads never deadlock against a concurrent write (test).
-- [ ] Event stream with no subscriber does not affect daemon performance
+- [x] A hung `locus-viz` client does not stall daemon requests (test).
+- [x] Graph reads never deadlock against a concurrent write (test).
+- [x] Event stream with no subscriber does not affect daemon performance
       (test).
 
 ### Tests
 
-- [ ] `access_count` increments when a memory is retrieved.
-- [ ] Access bump does not measurably delay the search response.
-- [ ] Snapshot mode writes a valid, self-contained HTML file with embedded data.
-- [ ] Snapshot mode makes no network calls.
-- [ ] Graph node set matches the memories in scope (namespace filter).
-- [ ] Graph edge set reflects shared entities.
-- [ ] `--expand <id>` shows the memory and its immediate links.
-- [ ] Live mode receives `memory_created` and renders a new node.
-- [ ] Live mode receives `memory_searched` and updates the visited counter.
-- [ ] Live SSE stream degrades gracefully when the viz client disconnects.
-- [ ] Daemon keeps serving search/save with p95 within budget during a
+- [x] `access_count` increments when a memory is retrieved.
+- [x] Access bump does not measurably delay the search response.
+- [x] Snapshot mode writes a valid, self-contained HTML file with embedded data.
+- [x] Snapshot mode makes no network calls.
+- [x] Graph node set matches the memories in scope (namespace filter).
+- [x] Graph edge set reflects shared entities.
+- [x] `--expand <id>` shows the memory and its immediate links.
+- [x] Live mode receives `memory_created` and renders a new node.
+- [x] Live mode receives `memory_searched` and updates the visited counter.
+- [x] Live SSE stream degrades gracefully when the viz client disconnects.
+- [x] Daemon keeps serving search/save with p95 within budget during a
       long-running graph query.
-- [ ] A hung viz client does not block daemon shutdown or requests.
-- [ ] Graph query does not deadlock a concurrent save.
-- [ ] Viz listener binds only to loopback.
-- [ ] Page loads offline (no external requests).
-- [ ] Secrets are not present in the rendered graph.
+- [x] A hung viz client does not block daemon shutdown or requests.
+- [x] Graph query does not deadlock a concurrent save.
+- [x] Viz listener binds only to loopback.
+- [x] Page loads offline (no external requests).
+- [x] Secrets are not present in the rendered graph.
 
 ### Out of Scope
 
@@ -1881,10 +1881,10 @@ drop-on-backpressure channel; a slow or hung viz client must not stall
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Non-blocking guarantees verified.
-- [ ] Live event protocol documented.
-- [ ] Graph data model documented.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Non-blocking guarantees verified.
+- [x] Live event protocol documented.
+- [x] Graph data model documented.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.

@@ -7,6 +7,8 @@
 pub mod conflict;
 pub mod context;
 pub mod error;
+pub mod events;
+pub mod graph;
 pub mod hooks;
 pub mod init;
 pub mod ipc;
@@ -15,6 +17,7 @@ pub mod memory;
 pub mod search;
 pub mod security;
 pub mod store;
+pub mod viz;
 
 pub use error::{Error, Result};
 

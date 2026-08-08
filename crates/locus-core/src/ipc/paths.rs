@@ -21,6 +21,7 @@ const LOCK_NAME: &str = "locus.lock";
 const PID_NAME: &str = "locus.pid";
 const LOG_DIR: &str = "logs";
 const LOG_NAME: &str = "locusd.log";
+const GRAPH_NAME: &str = "graph.html";
 
 /// A platform-appropriate IPC endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +116,11 @@ impl Paths {
     /// Path to the daemon log file.
     pub fn log_file(&self) -> PathBuf {
         self.data_dir.join(LOG_DIR).join(LOG_NAME)
+    }
+
+    /// Path where `locus graph` writes its default snapshot HTML (U-016).
+    pub fn graph_file(&self) -> PathBuf {
+        self.data_dir.join(GRAPH_NAME)
     }
 
     /// Creates the data directory (and log subdirectory) with restrictive

@@ -241,4 +241,52 @@ with the concrete shape of redact-or-warn.
   read-time or query-time opt-out; the secret is either redacted at write time
   or explicitly consented to.
 
+### D-13 — U-016 live graph event transport and non-blocking design
+Decisions made while implementing Memory Visualization (Graph). The hard
+constraint was U-016's "reading for the graph must never block or deadlock the
+memory path", plus the AGENTS.md hard rule that the single-writer thread and
+search latency budget must not be disturbed.
+
+- **One `EventBus` lives in `locus-core`, shared by `locusd` and `locus-viz`.**
+  A bounded, multi-subscriber broadcast (`sync_channel(256)` per subscriber)
+  with drop-on-backpressure: `publish` is `try_send`-only, never waits, and
+  removes dead subscribers. The daemon holds one instance and the viz process
+  re-broadcasts into its own local bus, so a hung browser client only ever
+  saturates the viz-side bus, never the daemon's.
+
+- **Event emission is side-effect-free and never on the hot path.** The writer
+  thread publishes `memory_created`; retrieval surfaces (`search`/`context`)
+  publish `memory_searched`/`memory_used` after the response payload is ready,
+  and access-count bumps go through a fire-and-forget `WriterOp::RecordAccess`
+  batched by id. A hung subscriber therefore cannot slow search or save, and a
+  saturated subscriber silently misses the newest events instead of queueing
+  without bound (the viewer coalesces anyway).
+
+- **Access tracking is schema-inline, not a separate table.** Migration 4 adds
+  `access_count` + `last_accessed_at` columns and two small indexes. This keeps
+  the graph's "most visited / recently used" read a single indexed scan and
+  avoids join/stat-table overhead at the 100k-memory budget. Stats are exposed
+  through `Store::graph`, which filters by namespace like every other read.
+
+- **`locus-viz` is a separate crate/process, never embedded in `locusd`.**
+  It serves a loopback-only HTTP + SSE viewer on a `std::net::TcpListener`
+  (no async runtime, matching the D-2 thread model). It subscribes to daemon
+  events over the existing newline-delimited IPC `events` command, so there is
+  no second wire format. It exits on its own after an idle window with zero
+  clients, and the CLI parent-waits so Ctrl-C always tears it down.
+
+- **Graph queries always run on their own read-only SQLite connections.** Both
+  snapshot and live paths go through `Store::graph` → `connect_ro()`: a fresh
+  read-only connection per query. WAL snapshot isolation means these reads
+  never take a write lock and cannot deadlock the single writer; a dedicated
+  test drives a concurrent insert while a graph query runs.
+
+- **Redaction happens at render time, not at query time.** Node titles, edge
+  labels, and entity names are passed through `security::redact` when building
+  the JSON payload, and `<` is escaped as `\u003c` so titles can never break
+  out of the embedded JSON `<script>`. This reuses the U-011 choke point so the
+  rendered graph can never contain a stored secret, even one inserted with
+  `--allow-secret` (that flag consents to *storage*, not to rendering).
+
+
 

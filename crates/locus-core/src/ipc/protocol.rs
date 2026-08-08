@@ -43,6 +43,7 @@ pub mod command {
     pub const REINDEX: &str = "reindex";
     pub const STOP: &str = "stop";
     pub const CONFLICTS: &str = "conflicts";
+    pub const EVENTS: &str = "events";
 }
 
 /// A single IPC request.
@@ -278,6 +279,61 @@ pub struct StatusResponse {
     pub fts_consistent: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+}
+
+/// Payload for the `events` command (U-016 live stream).
+///
+/// The client sends one `events` request; the daemon replies with a single
+/// success `Response` (the subscription ack) and then streams one
+/// [`MemoryEvent`] JSON line per event until the connection closes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EventsRequest {}
+
+/// Ack payload returned for the `events` command before the event stream
+/// begins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventsResponse {
+    pub subscribed: bool,
+}
+
+/// Kind of a memory event on the live stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryEventKind {
+    /// A memory was just stored.
+    Created,
+    /// A memory was surfaced as a search hit.
+    Searched,
+    /// A memory was surfaced in a context brief.
+    Used,
+}
+
+impl MemoryEventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "memory_created",
+            Self::Searched => "memory_searched",
+            Self::Used => "memory_used",
+        }
+    }
+}
+
+/// A single live event emitted by the daemon on retrieval/save (U-016).
+///
+/// Carries only redacted store content (U-011 redaction happens at write time),
+/// never raw secret values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryEvent {
+    pub kind: MemoryEventKind,
+    pub memory_id: String,
+    pub title: String,
+    pub namespace: String,
+    pub memory_type: String,
+    pub importance: u8,
+    /// Number of visits this event represents (1 for searches/uses, 0 for a
+    /// creation). Clients tick node counters by this amount.
+    pub access_delta: u64,
+    pub timestamp: i64,
 }
 
 #[cfg(test)]
