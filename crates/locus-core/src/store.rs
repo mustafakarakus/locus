@@ -120,12 +120,30 @@ CREATE INDEX IF NOT EXISTS idx_conflicts_memory_a ON memory_conflicts(memory_id_
 CREATE INDEX IF NOT EXISTS idx_conflicts_memory_b ON memory_conflicts(memory_id_b);
 ",
     ),
+    (
+        4,
+        "access_tracking",
+        "
+ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE memories ADD COLUMN last_accessed_at INTEGER;
+CREATE INDEX IF NOT EXISTS idx_memories_access_count ON memories(access_count);
+CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON memories(last_accessed_at);
+",
+    ),
 ];
 
 /// SQLite-backed storage for canonical memories.
 #[derive(Debug, Clone)]
 pub struct Store {
     db_path: PathBuf,
+}
+
+/// Outcome of [`Store::retrieve`]: the relevance-ranked hits plus the full
+/// memory objects they refer to (used for access tracking and events).
+#[derive(Debug, Clone)]
+pub struct RetrieveOutcome {
+    pub hits: Vec<Hit>,
+    pub memories: Vec<Memory>,
 }
 
 impl Store {
@@ -304,16 +322,64 @@ impl Store {
         Ok(search::rerank_hits(hits, &signals))
     }
 
-    /// Builds a compressed markdown context brief from search results.
-    pub fn context_brief(&self, query: Query, options: ContextBriefOptions) -> Result<String> {
+    /// Retrieves memories surfaced by a search query, returning both the
+    /// relevance-ranked hits and the full memory objects they refer to.
+    ///
+    /// This is the single "surface to a caller" funnel used by the daemon's
+    /// search and context handlers so access tracking (U-016) hooks here.
+    pub fn retrieve(&self, query: Query) -> Result<RetrieveOutcome> {
         query.validate()?;
         let hits = self.search(query)?;
-        if hits.is_empty() {
-            return Ok(context::NO_RELEVANT_MEMORY.to_string());
+        let memories = self.load_memories_for_hits(&hits)?;
+        Ok(RetrieveOutcome { hits, memories })
+    }
+
+    /// Builds a compressed markdown context brief from search results.
+    pub fn context_brief(&self, query: Query, options: ContextBriefOptions) -> Result<String> {
+        Ok(self.context_brief_with_memories(query, options)?.0)
+    }
+
+    /// Builds a context brief and returns the memories that made it into the
+    /// final output, so the daemon can record access and emit live events for
+    /// exactly what was surfaced (U-016).
+    pub fn context_brief_with_memories(
+        &self,
+        query: Query,
+        options: ContextBriefOptions,
+    ) -> Result<(String, Vec<Memory>)> {
+        let outcome = self.retrieve(query)?;
+        if outcome.hits.is_empty() {
+            return Ok((context::NO_RELEVANT_MEMORY.to_string(), Vec::new()));
+        }
+        let (brief, selected) =
+            context::build_context_brief_with_selected(&outcome.memories, options);
+        Ok((brief, selected.into_iter().cloned().collect()))
+    }
+
+    /// Records access to memories (U-016 access tracking).
+    ///
+    /// A batched, cheap update that increments `access_count` and stamps
+    /// `last_accessed_at` for every id. Must run on the single-writer path (the
+    /// daemon fires this through the writer thread fire-and-forget); it is never
+    /// called on the latency-critical search response path.
+    pub fn record_access(&self, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
         }
 
-        let memories = self.load_memories_for_hits(&hits)?;
-        Ok(context::build_context_brief(&memories, options))
+        let conn = self.connect_rw()?;
+        let mut stmt = conn.prepare(
+            "
+            UPDATE memories
+            SET access_count = access_count + 1, last_accessed_at = ?
+            WHERE id = ?
+            ",
+        )?;
+        let now = now_unix();
+        for id in ids {
+            stmt.execute(params![now, id])?;
+        }
+        Ok(())
     }
 
     /// Builds a namespace-scoped summary brief without a user query.
@@ -350,7 +416,8 @@ impl Store {
         let row = conn
             .query_row(
                 "
-                SELECT id, namespace, type, title, content, importance, source, created_at, updated_at
+                SELECT id, namespace, type, title, content, importance, source, created_at, updated_at,
+                       access_count, last_accessed_at
                 FROM memories
                 WHERE id = ?
                 ",
@@ -372,7 +439,8 @@ impl Store {
         let conn = self.connect_ro()?;
         let mut sql = String::from(
             "
-            SELECT id, namespace, type, title, content, importance, source, created_at, updated_at
+            SELECT id, namespace, type, title, content, importance, source, created_at, updated_at,
+                   access_count, last_accessed_at
             FROM memories
             ",
         );
@@ -610,7 +678,7 @@ impl Store {
         Ok(conn)
     }
 
-    fn connect_ro(&self) -> Result<Connection> {
+    pub(crate) fn connect_ro(&self) -> Result<Connection> {
         let conn = Connection::open_with_flags(
             &self.db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
@@ -665,7 +733,8 @@ impl Store {
         let conn = self.connect_ro()?;
         let mut stmt = conn.prepare(
             "
-            SELECT id, namespace, type, title, content, importance, source, created_at, updated_at
+            SELECT id, namespace, type, title, content, importance, source, created_at, updated_at,
+                   access_count, last_accessed_at
             FROM memories
             WHERE id = ?
             ",
@@ -797,7 +866,7 @@ fn upsert_fts_row(
     Ok(())
 }
 
-fn load_entities(conn: &Connection, memory_id: &str) -> Result<Vec<String>> {
+pub(crate) fn entities_of(conn: &Connection, memory_id: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "
         SELECT e.name
@@ -812,6 +881,10 @@ fn load_entities(conn: &Connection, memory_id: &str) -> Result<Vec<String>> {
         .query_map(params![memory_id], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+fn load_entities(conn: &Connection, memory_id: &str) -> Result<Vec<String>> {
+    entities_of(conn, memory_id)
 }
 
 fn row_to_conflict(
@@ -845,6 +918,8 @@ fn row_to_memory_base(row: &rusqlite::Row<'_>) -> std::result::Result<Memory, ru
         source: row.get(6)?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        access_count: row.get(9)?,
+        last_accessed_at: row.get(10)?,
     })
 }
 
@@ -1678,5 +1753,62 @@ mod tests {
         assert!(warnings.is_empty());
         let inserted = store.get_memory_by_id(&id).expect("memory should exist");
         assert_eq!(inserted.title, "Use Postgres for auth");
+    }
+
+    #[test]
+    fn record_access_increments_count_and_stamps_timestamp() {
+        let (store, _tmp, _) = test_store();
+        let id = store
+            .insert_memory(sample_new_memory(Some("project:auth"), MemoryType::Fact))
+            .expect("insert");
+
+        let memory = store.get_memory_by_id(&id).expect("get");
+        assert_eq!(memory.access_count, 0);
+        assert!(memory.last_accessed_at.is_none());
+
+        store
+            .record_access(std::slice::from_ref(&id))
+            .expect("record");
+        store
+            .record_access(std::slice::from_ref(&id))
+            .expect("record again");
+
+        let memory = store.get_memory_by_id(&id).expect("get");
+        assert_eq!(memory.access_count, 2);
+        assert!(memory.last_accessed_at.is_some());
+    }
+
+    #[test]
+    fn record_access_batch_and_empty_are_safe() {
+        let (store, _tmp, _) = test_store();
+        let id_a = store
+            .insert_memory(sample_new_memory(Some("project:auth"), MemoryType::Fact))
+            .expect("insert a");
+        let id_b = store
+            .insert_memory(sample_new_memory(Some("project:auth"), MemoryType::Note))
+            .expect("insert b");
+
+        store.record_access(&[]).expect("empty is a no-op");
+
+        store
+            .record_access(&[id_a.clone(), id_b.clone()])
+            .expect("batch");
+
+        assert_eq!(store.get_memory_by_id(&id_a).unwrap().access_count, 1);
+        assert_eq!(store.get_memory_by_id(&id_b).unwrap().access_count, 1);
+    }
+
+    #[test]
+    fn retrieve_returns_hits_and_memories_in_rank_order() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(sample_new_memory(Some("project:auth"), MemoryType::Fact))
+            .expect("insert");
+
+        let query = Query::new("postgres".to_string());
+        let outcome = store.retrieve(query).expect("retrieve");
+        assert_eq!(outcome.hits.len(), 1);
+        assert_eq!(outcome.hits[0].id, outcome.memories[0].id);
+        assert!(outcome.memories[0].content.contains("Postgres"));
     }
 }

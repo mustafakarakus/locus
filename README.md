@@ -133,6 +133,8 @@ locus forget <memory-id>
 locus status
 locus doctor
 locus reindex
+locus graph                         # offline HTML snapshot of the memory graph
+locus graph --live                  # live loopback viewer (locus-viz + daemon events)
 ```
 
 ### `locus init`

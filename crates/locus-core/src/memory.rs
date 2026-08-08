@@ -57,6 +57,10 @@ pub struct Memory {
     pub source: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Number of times this memory has been surfaced to a caller (U-016).
+    pub access_count: u64,
+    /// Last time this memory was surfaced to a caller, if ever (U-016).
+    pub last_accessed_at: Option<i64>,
 }
 
 /// Input for creating a new memory.

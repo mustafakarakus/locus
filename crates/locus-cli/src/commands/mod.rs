@@ -3,6 +3,7 @@ pub mod context;
 pub mod daemon;
 pub mod doctor;
 pub mod forget;
+pub mod graph;
 pub mod hook;
 pub mod init;
 pub mod mcp;

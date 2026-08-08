@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::ListenerOptions;
 
+use locus_core::events::EventBus;
 use locus_core::ipc::paths::{Endpoint, Paths};
 use locus_core::ipc::protocol::StatusResponse;
 use locus_core::store::Store;
@@ -36,6 +37,7 @@ pub struct Shared {
     config: Config,
     log: DaemonLog,
     writer: WriterHandle,
+    events: EventBus,
     pid: u32,
     started: Instant,
     active: AtomicUsize,
@@ -52,13 +54,15 @@ impl Shared {
         config: Config,
         log: DaemonLog,
     ) -> (Arc<Self>, JoinHandle<()>) {
-        let (writer, writer_join) = writer::spawn(store.clone());
+        let events = EventBus::default();
+        let (writer, writer_join) = writer::spawn(store.clone(), events.clone());
         let shared = Arc::new(Self {
             store,
             paths,
             config,
             log,
             writer,
+            events,
             pid: std::process::id(),
             started: Instant::now(),
             active: AtomicUsize::new(0),
@@ -78,6 +82,10 @@ impl Shared {
 
     pub fn writer(&self) -> &WriterHandle {
         &self.writer
+    }
+
+    pub fn events(&self) -> &EventBus {
+        &self.events
     }
 
     pub fn log(&self) -> &DaemonLog {

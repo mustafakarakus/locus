@@ -162,7 +162,7 @@ fn restart(paths: &Paths, client: &DaemonClient) -> Result<()> {
 /// 2. A `locusd` binary sitting next to the current `locus` executable
 ///    (the normal case for a co-installed pair).
 /// 3. Bare `locusd`, relying on `PATH`.
-fn locate_daemon_binary() -> Result<PathBuf> {
+pub(crate) fn locate_daemon_binary() -> Result<PathBuf> {
     if let Ok(custom) = std::env::var(LOCUSD_BIN_ENV) {
         if !custom.trim().is_empty() {
             return Ok(PathBuf::from(custom));

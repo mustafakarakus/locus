@@ -1,7 +1,7 @@
 //! `locus` — the human-facing CLI.
 //!
 //! Commands: `init`, `remember`, `search`, `context`, `forget`, `status`,
-//! `doctor`, `reindex`, `daemon`, `mcp`, `conflicts`.
+//! `doctor`, `reindex`, `daemon`, `mcp`, `conflicts`, `graph`, `hook`.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -12,8 +12,8 @@ mod tests;
 
 use commands::{
     conflicts::ConflictsCmd, context::ContextCmd, daemon::DaemonCmd, doctor::DoctorCmd,
-    forget::ForgetCmd, hook::HookCmd, init::InitCmd, mcp::McpCmd, reindex::ReindexCmd,
-    remember::RememberCmd, search::SearchCmd, status::StatusCmd,
+    forget::ForgetCmd, graph::GraphCmd, hook::HookCmd, init::InitCmd, mcp::McpCmd,
+    reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd, status::StatusCmd,
 };
 
 /// Locus — local-first, long-term memory for AI coding agents
@@ -67,6 +67,9 @@ enum Commands {
 
     /// List memories that may conflict with each other
     Conflicts(ConflictsCmd),
+
+    /// Render the memory graph as HTML (snapshot or live)
+    Graph(GraphCmd),
 }
 
 fn main() -> Result<()> {
@@ -92,5 +95,6 @@ fn main() -> Result<()> {
         Commands::Daemon(cmd) => cmd.run(),
         Commands::Mcp(cmd) => cmd.run(),
         Commands::Conflicts(cmd) => cmd.run(),
+        Commands::Graph(cmd) => cmd.run(),
     }
 }
