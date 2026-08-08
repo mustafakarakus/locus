@@ -13,6 +13,25 @@
 use crate::graph::{GraphData, GraphEdge, GraphNode};
 use crate::Result;
 
+use serde::Serialize;
+
+/// Wire-format edge: node indexes into `LeanPayload::nodes` instead of full
+/// UUIDs. The renderer only needs source/target, and a graph with tens of
+/// thousands of edges would otherwise ship 36-char ids twice per edge.
+#[derive(Serialize)]
+struct LeanEdge {
+    source: usize,
+    target: usize,
+}
+
+/// Wire-format payload: nodes unchanged, edges reduced to indexes.
+#[derive(Serialize)]
+struct LeanPayload {
+    nodes: Vec<GraphNode>,
+    edges: Vec<LeanEdge>,
+    truncated: bool,
+}
+
 /// Redacts any detected secret from the text rendered into a graph, replacing
 /// it with its `[REDACTED:rule-id]` placeholder.
 fn redacted(text: &str) -> String {
@@ -57,9 +76,37 @@ fn redacted_graph(data: &GraphData) -> GraphData {
 /// Serializes graph data for embedding into a `<script>` block or the `/data`
 /// endpoint. Detected secrets are redacted and `<` is escaped as `\u003c` so a
 /// hostile title can never break out of the script element.
+///
+/// Edges are serialized as node indexes rather than ids: the renderer addresses
+/// nodes positionally, and this keeps the payload small even when a graph has
+/// tens of thousands of edges.
 pub fn graph_payload_json(data: &GraphData) -> Result<String> {
     let data = redacted_graph(data);
-    let json = serde_json::to_string(&data)
+    let index: std::collections::HashMap<&str, usize> = data
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.as_str(), i))
+        .collect();
+    let edges = data
+        .edges
+        .iter()
+        .filter_map(
+            |e| match (index.get(e.source.as_str()), index.get(e.target.as_str())) {
+                (Some(&s), Some(&t)) => Some(LeanEdge {
+                    source: s,
+                    target: t,
+                }),
+                _ => None,
+            },
+        )
+        .collect();
+    let payload = LeanPayload {
+        nodes: data.nodes,
+        edges,
+        truncated: data.truncated,
+    };
+    let json = serde_json::to_string(&payload)
         .map_err(|err| crate::Error::Other(format!("failed to serialize graph: {err}")))?;
     Ok(json.replace('<', "\\u003c"))
 }
@@ -96,10 +143,45 @@ const RENDERER_JS: &str = r##"
   var hoveredId = null;
   var W = window.innerWidth, H = window.innerHeight;
   var svg, view, linkLayer, nodeLayer;
-  var nodeEls = {}, hitEls = {}, linkEls = {};
+  var nodeEls = {}, hitEls = {};
+  var linkPath = null, activePath = null;
+  var nodeEdges = {};
   var cam = { x: 0, y: 0, k: 1 };
-  var autoFit = true, settleFrames = 0, userControlled = false;
+  var autoFit = true, userControlled = false;
+  // camTarget is a destination the camera eases toward each tick (used by the
+  // legend namespace focus); null means no focused destination is pending.
+  var camTarget = null;
+  // pinnedNs is the namespace whose cloud stays pinned when a legend row is
+  // clicked. While set, leaving the legend returns to this cloud instead of the
+  // overview; hovering other rows still previews, but the pinned cloud wins on
+  // mouseleave. Clicking the pinned row again unpins back to the overview.
+  var pinnedNs = null;
   var drag = null, dragMoved = false;
+  // Incremental render flags. Links and nodes are heavy (57k+ links, 2k dots on
+  // a big graph), so draw() only touches the DOM when something actually moved:
+  // linkDirty/nodeDirty while the force sim runs, camDirty while the camera
+  // eases, and focusDirty when the hovered/pinned node changes.
+  var linkDirty = true, nodeDirty = true, camDirty = true, focusDirty = true;
+  var lastCamK = 1;
+  var lastFocus = "";
+  // Layout freeze: once the largest node velocity stays below EPS for
+  // SETTLE_FRAMES consecutive frames, the physics stops re-applying forces and
+  // positions lock, so a converged graph no longer "dances" under 60fps ticks.
+  // A wall-clock simulation budget guarantees freeze even for very large graphs
+  // where the O(n^2) repulsion never settles below EPS on its own: forces cool
+  // to zero over SIM_MS (regardless of frame rate), then the layout is locked.
+  var settled = false, stillFrames = 0;
+  var SETTLE_EPS = 0.02;
+  var SETTLE_FRAMES = 30;
+  var simStart = 0;
+  var SIM_MS = 3500;
+  var lastTick = Date.now();
+  // Maximum per-pair repulsion acceleration (world units/frame^2) and the
+  // radius beyond which nodes stop repelling. Together they spread each cluster
+  // locally while letting namespace clouds sit close to each other instead of
+  // repelling across the whole canvas.
+  var REPULSE_ACCEL = 0.9;
+  var REPULSE_DIST = 260;
 
   // Absolute, per-visit dot growth: base radius with a logarithmic ramp so a
   // node keeps getting bigger every time it is visited, but never beyond
@@ -161,27 +243,42 @@ const RENDERER_JS: &str = r##"
     for (var i = 0; i < nodes.length; i++) seen[nodes[i].ns] = true;
     var lines = [];
     Object.keys(seen).sort().forEach(function (ns) {
-      lines.push('<div><span class="dot" style="background:' + nsColor(ns) +
-        '"></span>' + esc(ns) + '</div>');
+      lines.push('<div class="lrow" data-ns="' + esc(ns) + '"><span class="dot" style="background:' +
+        nsColor(ns) + '"></span>' + esc(ns) + '</div>');
     });
     lines.push('<div>node size = retrieval frequency</div>');
     lines.push('<div>brighter = more recently touched</div>');
     lines.push('<div>hover to inspect &middot; click to pin</div>');
+    lines.push('<div>hover a namespace to focus it</div>');
     legendEl.innerHTML = lines.join("");
   }
-  function fitCamera() {
-    if (!nodes.length) return null;
+  // Bounding box for the nodes in one namespace, or the whole graph when no
+  // namespace is given. Used by fitCamera() (overview) and focusNamespace()
+  // (legend zoom).
+  function nsBounds(ns) {
     var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (var i = 0; i < nodes.length; i++) {
+      if (ns && nodes[i].ns !== ns) continue;
       if (nodes[i].x < minX) minX = nodes[i].x;
       if (nodes[i].x > maxX) maxX = nodes[i].x;
       if (nodes[i].y < minY) minY = nodes[i].y;
       if (nodes[i].y > maxY) maxY = nodes[i].y;
     }
-    var bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
-    var pad = 80;
+    return minX === Infinity ? null : { minX: minX, maxX: maxX, minY: minY, maxY: maxY };
+  }
+  function fitToBounds(b, pad) {
+    if (!b) return null;
+    var bw = Math.max(1, b.maxX - b.minX), bh = Math.max(1, b.maxY - b.minY);
     var k = Math.max(0.05, Math.min(3, Math.min((W - pad * 2) / bw, (H - pad * 2) / bh) * 0.9));
-    return { x: W / 2 - (minX + maxX) / 2 * k, y: H / 2 - (minY + maxY) / 2 * k, k: k };
+    return { x: W / 2 - (b.minX + b.maxX) / 2 * k, y: H / 2 - (b.minY + b.maxY) / 2 * k, k: k };
+  }
+  function fitCamera() {
+    return fitToBounds(nsBounds(), 80);
+  }
+  function focusNamespace(ns) {
+    var b = nsBounds(ns);
+    var t = fitToBounds(b, 90);
+    if (t) camTarget = t;
   }
   function fit() {
     var t = fitCamera();
@@ -194,11 +291,38 @@ const RENDERER_JS: &str = r##"
     nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
     nodeEls = {};
     hitEls = {};
-    linkEls = {};
+    // All links render as one <path> (a single d attribute instead of one
+    // <line> element per edge) so large graphs stay cheap to draw. A second
+    // path holds the connections of the hovered/pinned node on top.
+    linkPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    linkPath.setAttribute("fill", "none");
+    linkPath.setAttribute("stroke", "#21262d");
+    linkPath.setAttribute("stroke-width", 1);
+    activePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    activePath.setAttribute("fill", "none");
+    activePath.setAttribute("stroke", "#8b949e");
+    activePath.setAttribute("stroke-width", 2);
+    linkLayer.appendChild(linkPath);
+    linkLayer.appendChild(activePath);
     svg.appendChild(view);
     view.appendChild(linkLayer);
     view.appendChild(nodeLayer);
     app.appendChild(svg);
+    // Pre-index edges by endpoint node id so the focus path can be rebuilt in
+    // O(deg) instead of scanning every edge. Edge endpoints are node indexes
+    // into `nodes`, so resolve them to ids here.
+    nodeEdges = {};
+    for (var k = 0; k < edges.length; k++) {
+      var e = edges[k];
+      var sa = nodes[e.source], sb = nodes[e.target];
+      if (!sa || !sb) continue;
+      (nodeEdges[sa.id] = nodeEdges[sa.id] || []).push(k);
+      (nodeEdges[sb.id] = nodeEdges[sb.id] || []).push(k);
+    }
+    linkDirty = true;
+    nodeDirty = true;
+    camDirty = true;
+    focusDirty = true;
     nodeLayer.addEventListener("click", function (e) {
       if (dragMoved) return;
       var c = e.target.closest && e.target.closest("circle");
@@ -208,6 +332,7 @@ const RENDERER_JS: &str = r##"
       if (selected && selected.id === n.id) {
         // Clicking the pinned node again unpins it.
         selected = null;
+        focusDirty = true;
         hidePanel();
       } else {
         select(n);
@@ -221,10 +346,12 @@ const RENDERER_JS: &str = r##"
       var n = nodeMap[c.getAttribute("data-id")];
       if (n && n.id !== hoveredId) {
         hoveredId = n.id;
+        focusDirty = true;
         showPanel(n);
       }
     });
     nodeLayer.addEventListener("pointerout", function (e) {
+      if (hoveredId) focusDirty = true;
       hoveredId = null;
       // relatedTarget is what the pointer moved onto. Only hide when leaving
       // nodes entirely (not onto another node, whose pointerover reopens the
@@ -239,6 +366,7 @@ const RENDERER_JS: &str = r##"
     svg.addEventListener("pointerdown", function (e) {
       dragMoved = false;
       if (e.target === nodeLayer || e.target.closest && e.target.closest("circle")) return;
+      camTarget = null;
       drag = { x: e.clientX, y: e.clientY, camX: cam.x, camY: cam.y };
       svg.setPointerCapture(e.pointerId);
     });
@@ -247,26 +375,72 @@ const RENDERER_JS: &str = r##"
       if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 3) dragMoved = true;
       cam.x = drag.camX + (e.clientX - drag.x);
       cam.y = drag.camY + (e.clientY - drag.y);
+      camDirty = true;
       userControlled = true;
       autoFit = false;
     });
     svg.addEventListener("pointerup", function () { drag = null; });
     svg.addEventListener("wheel", function (e) {
       e.preventDefault();
+      camTarget = null;
       var f = Math.exp(-e.deltaY * 0.0012);
       var wx = (e.clientX - cam.x) / cam.k;
       var wy = (e.clientY - cam.y) / cam.k;
       cam.k = Math.max(0.05, Math.min(20, cam.k * f));
       cam.x = e.clientX - wx * cam.k;
       cam.y = e.clientY - wy * cam.k;
+      camDirty = true;
       userControlled = true;
       autoFit = false;
     }, { passive: false });
     window.addEventListener("resize", function () {
       W = window.innerWidth;
       H = window.innerHeight;
+      camDirty = true;
       if (!userControlled) fit();
     });
+    // Legend namespaces are focus links: hovering one eases the camera to that
+    // namespace's cloud (full fit on screen). Moving off it returns to the
+    // overall fit, and any drag/wheel/click takes over from there. Clicking a
+    // row pins that cloud: the camera returns to it on mouseleave and the row
+    // gets a pin marker. Clicking the pinned row again unpins.
+    if (legendEl && !legendEl._bound) {
+      legendEl._bound = true;
+      legendEl.addEventListener("mouseover", function (e) {
+        var row = e.target.closest && e.target.closest(".lrow");
+        if (row) {
+          var ns = row.getAttribute("data-ns");
+          focusNamespace(ns);
+          autoFit = false;
+          userControlled = false;
+        }
+      });
+      legendEl.addEventListener("mouseleave", function () {
+        if (pinnedNs) {
+          focusNamespace(pinnedNs);
+        } else {
+          camTarget = fitCamera();
+        }
+      });
+      legendEl.addEventListener("click", function (e) {
+        var row = e.target.closest && e.target.closest(".lrow");
+        if (!row) return;
+        var ns = row.getAttribute("data-ns");
+        if (pinnedNs === ns) {
+          pinnedNs = null;
+          camTarget = fitCamera();
+        } else {
+          pinnedNs = ns;
+          focusNamespace(ns);
+          autoFit = false;
+          userControlled = false;
+        }
+        for (var i = 0; i < legendEl.children.length; i++) {
+          var ch = legendEl.children[i];
+          if (ch.classList) ch.classList.toggle("pin", ch === row && !!pinnedNs);
+        }
+      });
+    }
   }
   function setData(data) {
     var prev = nodeMap;
@@ -293,17 +467,41 @@ const RENDERER_JS: &str = r##"
     scatter();
     fit();
     autoFit = true;
-    settleFrames = 0;
+    settled = false;
+    stillFrames = 0;
+    simStart = Date.now();
     buildNsHues();
     buildLegend();
   }
   function scatter() {
-    var r = 180;
+    // Cluster-aware seed: each namespace's nodes start grouped around its own
+    // center, and the namespace centers sit on a small ring near the origin.
+    // This keeps the clouds close together in the initial view (instead of a
+    // random square whose span grows with node count), so the whole graph is
+    // reachable by mouse drag without long panning. The force layout then
+    // tightens each cluster while cooling locks it in place.
+    var names = [];
+    var counts = {};
+    for (var i = 0; i < nodes.length; i++) {
+      var ns = nodes[i].ns || "global";
+      if (!counts[ns]) { counts[ns] = 0; names.push(ns); }
+      counts[ns]++;
+    }
+    names.sort();
+    var ring = 40 + Math.sqrt(names.length) * 40;
+    var centers = {};
+    for (var i = 0; i < names.length; i++) {
+      var a = (i / names.length) * Math.PI * 2;
+      centers[names[i]] = { x: Math.cos(a) * ring, y: Math.sin(a) * ring };
+    }
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i];
       if (!n.fresh) continue;
-      n.x = (Math.random() * 2 - 1) * r;
-      n.y = (Math.random() * 2 - 1) * r;
+      var ns = n.ns || "global";
+      var c = centers[ns] || { x: 0, y: 0 };
+      var cr = 25 + Math.sqrt(counts[ns]) * 6;
+      n.x = c.x + (Math.random() * 2 - 1) * cr;
+      n.y = c.y + (Math.random() * 2 - 1) * cr;
     }
   }
   function applyEvent(ev) {
@@ -315,52 +513,106 @@ const RENDERER_JS: &str = r##"
     n.acc = (n.acc || 0) + (ev.access_delta || 0);
     if (n.acc > maxAccess) maxAccess = n.acc;
     n.updated = ev.timestamp;
-    if (ev.access_delta) n.pulse = 1;
+    if (ev.access_delta) {
+      n.pulse = 1;
+      nodeDirty = true;
+    }
   }
   function tick() {
-    // Pairwise repulsion is O(n^2) per frame. Tuned for the graph node cap
-    // (DEFAULT_GRAPH_MAX_NODES, 300 -> ~45k checks/frame, cheap at 60fps).
-    // Raising that cap without rethinking this loop is where it will fall over.
-    for (var i = 0; i < nodes.length; i++) {
-      var a = nodes[i];
-      for (var j = i + 1; j < nodes.length; j++) {
-        var b = nodes[j];
-        var dx = a.x - b.x, dy = a.y - b.y;
-        var d2 = dx * dx + dy * dy + 1;
-        var f = 2600 / d2;
+    if (!settled) {
+      // Cooling factor: forces ramp down as the simulation budget is spent, so
+      // even a huge O(n^2) layout converges and locks instead of jittering.
+      var elapsed = simStart ? (Date.now() - simStart) : 0;
+      var cool = elapsed < SIM_MS ? 1 - elapsed / SIM_MS : 0;      // Pairwise repulsion is O(n^2) per frame, but only acts within a local
+      // radius. A cutoff keeps clouds from shoving each other across the whole
+      // canvas: nodes inside a namespace repel to spread the cluster, while
+      // clusters beyond the cutoff leave each other alone and stay close. The
+      // per-pair acceleration is capped so densely seeded clusters spread out
+      // instead of launching each other across the view.
+      var REPULSE_DIST = 260;
+      for (var i = 0; i < nodes.length; i++) {
+        var a = nodes[i];
+        for (var j = i + 1; j < nodes.length; j++) {
+          var b = nodes[j];
+          var dx = a.x - b.x, dy = a.y - b.y;
+          var d2 = dx * dx + dy * dy + 1;
+          if (d2 > REPULSE_DIST * REPULSE_DIST) continue;
+          // Force factor such that accel = f*dx; raw = 2600/d^2 gives a 1/d
+          // acceleration that blows up for overlapping seeds. Clamp so a pair
+          // never pushes harder than REPULSE_ACCEL regardless of distance.
+          var d = Math.sqrt(d2);
+          var f = Math.min(2600 / d2, REPULSE_ACCEL / d) * cool;
+          a.vx += f * dx; a.vy += f * dy;
+          b.vx -= f * dx; b.vy -= f * dy;
+        }
+      }
+      for (var k = 0; k < edges.length; k++) {
+        var e = edges[k];
+        var a = nodeMap[e.source], b = nodeMap[e.target];
+        if (!a || !b) continue;
+        var dx = b.x - a.x, dy = b.y - a.y;
+        var d = Math.sqrt(dx * dx + dy * dy) || 1;
+        var f = 0.012 * (d - 90) / d * cool;
         a.vx += f * dx; a.vy += f * dy;
         b.vx -= f * dx; b.vy -= f * dy;
       }
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        n.vx += (0 - n.x) * 0.004 * cool;
+        n.vy += (0 - n.y) * 0.004 * cool;
+        n.x += n.vx; n.y += n.vy;
+        n.vx *= 0.82; n.vy *= 0.82;
+        if (n.fade < 1) n.fade = Math.min(1, n.fade + 0.05);
+        if (n.pulse > 0) n.pulse *= 0.92;
+      }
+      // Freeze the layout once it has converged, so the dots stop dancing.
+      var maxV = 0;
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        var v = Math.abs(n.vx) > Math.abs(n.vy) ? Math.abs(n.vx) : Math.abs(n.vy);
+        if (v > maxV) maxV = v;
+      }
+      if (maxV < SETTLE_EPS || elapsed >= SIM_MS) {
+        if (++stillFrames >= SETTLE_FRAMES || elapsed >= SIM_MS) {
+          for (var i = 0; i < nodes.length; i++) { nodes[i].vx = 0; nodes[i].vy = 0; }
+          settled = true;
+        }
+      } else {
+        stillFrames = 0;
+      }
+      linkDirty = true;
+      nodeDirty = true;
     }
-    for (var k = 0; k < edges.length; k++) {
-      var e = edges[k];
-      var a = nodeMap[e.source], b = nodeMap[e.target];
-      if (!a || !b) continue;
-      var dx = b.x - a.x, dy = b.y - a.y;
-      var d = Math.sqrt(dx * dx + dy * dy) || 1;
-      var f = 0.012 * (d - 90) / d;
-      a.vx += f * dx; a.vy += f * dy;
-      b.vx -= f * dx; b.vy -= f * dy;
-    }
-    for (var i = 0; i < nodes.length; i++) {
-      var n = nodes[i];
-      n.vx += (0 - n.x) * 0.004;
-      n.vy += (0 - n.y) * 0.004;
-      n.x += n.vx; n.y += n.vy;
-      n.vx *= 0.82; n.vy *= 0.82;
-      if (n.fade < 1) n.fade = Math.min(1, n.fade + 0.05);
-      if (n.pulse > 0) n.pulse *= 0.92;
-    }
-    if (autoFit) {
+    // Time-based camera easing: speed depends on real elapsed time, not frame
+    // count, so centering a cloud feels the same at any frame rate. The rate is
+    // tuned fast enough that focusing a namespace from the overview settles in
+    // well under a second on a heavy graph.
+    var now = Date.now();
+    var dt = Math.min(0.1, (now - lastTick) / 1000);
+    lastTick = now;
+    var ease = 1 - Math.exp(-dt * 12);
+    if (camTarget) {
+      // Ease toward a focused destination (legend namespace). Once converged,
+      // the target is cleared so the user's own drag/wheel take over.
+      var tx = camTarget;
+      cam.k += (tx.k - cam.k) * ease;
+      cam.x += (tx.x - cam.x) * ease;
+      cam.y += (tx.y - cam.y) * ease;
+      camDirty = true;
+      if (Math.abs(cam.k - tx.k) < 0.0005 &&
+          Math.abs(cam.x - tx.x) < 0.5 &&
+          Math.abs(cam.y - tx.y) < 0.5) {
+        cam = tx;
+        camTarget = null;
+      }
+    } else if (autoFit) {
       var t = fitCamera();
       if (t) {
-        settleFrames++;
-        var ease = settleFrames < 60 ? 0.04 : 0.06;
         cam.k += (t.k - cam.k) * ease;
         cam.x += (t.x - cam.x) * ease;
         cam.y += (t.y - cam.y) * ease;
-        if (settleFrames > 90 &&
-            Math.abs(cam.k - t.k) < 0.0005 &&
+        camDirty = true;
+        if (Math.abs(cam.k - t.k) < 0.0005 &&
             Math.abs(cam.x - t.x) < 0.5 &&
             Math.abs(cam.y - t.y) < 0.5) {
           cam = t;
@@ -373,32 +625,44 @@ const RENDERER_JS: &str = r##"
   }
   function draw() {
     if (!linkLayer || !nodeLayer) return;
-    view.setAttribute("transform",
-      "translate(" + cam.x.toFixed(1) + "," + cam.y.toFixed(1) + ") scale(" + cam.k.toFixed(4) + ")");
-    var usedLinks = {};
-    var usedNodes = {};
-    for (var k = 0; k < edges.length; k++) {
-      var e = edges[k];
-      var a = nodeMap[e.source], b = nodeMap[e.target];
-      if (!a || !b) continue;
-      var key = e.source + "|" + e.target;
-      usedLinks[key] = true;
-      // Hover takes priority over the pinned node so hovering any node (even
-      // after pinning one) reveals its connections.
-      var focus = hoveredId || (selected ? selected.id : null);
-      var active = focus && (e.source === focus || e.target === focus);
-      var ln = linkEls[key];
-      if (!ln) {
-        ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
-        ln.setAttribute("stroke-width", 1);
-        linkEls[key] = ln;
-        linkLayer.appendChild(ln);
-      }
-      ln.setAttribute("x1", a.x); ln.setAttribute("y1", a.y);
-      ln.setAttribute("x2", b.x); ln.setAttribute("y2", b.y);
-      ln.setAttribute("stroke", active ? "#8b949e" : "#21262d");
-      ln.setAttribute("stroke-width", active ? 2 : 1);
+    if (camDirty) {
+      view.setAttribute("transform",
+        "translate(" + cam.x.toFixed(1) + "," + cam.y.toFixed(1) + ") scale(" + cam.k.toFixed(4) + ")");
+      camDirty = false;
     }
+    var focus = hoveredId || (selected ? selected.id : null);
+    var posChanged = linkDirty;
+    // Links: one <path> for every edge, rebuilt only when the layout moved.
+    if (linkDirty) {
+      var d = "";
+      for (var k = 0; k < edges.length; k++) {
+        var e = edges[k];
+        var a = nodes[e.source], b = nodes[e.target];
+        if (!a || !b) continue;
+        d += "M" + a.x.toFixed(1) + " " + a.y.toFixed(1) + "L" + b.x.toFixed(1) + " " + b.y.toFixed(1);
+      }
+      linkPath.setAttribute("d", d);
+      linkDirty = false;
+    }
+    // Focus links: the connections of the hovered/pinned node, drawn on top.
+    // Rebuilt when focus changes or when the layout moved (node positions).
+    if (focusDirty || posChanged) {
+      var fd = "";
+      if (focus) {
+        var idxs = nodeEdges[focus];
+        for (var m = 0; idxs && m < idxs.length; m++) {
+          var fe = edges[idxs[m]];
+          var fa = nodes[fe.source], fb = nodes[fe.target];
+          if (!fa || !fb) continue;
+          fd += "M" + fa.x.toFixed(1) + " " + fa.y.toFixed(1) + "L" + fb.x.toFixed(1) + " " + fb.y.toFixed(1);
+        }
+      }
+      activePath.setAttribute("d", fd);
+      focusDirty = false;
+    }
+    // Nodes: update positions while the sim runs, appearance when the camera
+    // zooms (radius clamps are screen-space), and highlight when focus changes.
+    var usedNodes = {};
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i];
       usedNodes[n.id] = true;
@@ -415,9 +679,10 @@ const RENDERER_JS: &str = r##"
         hitEls[n.id] = ht;
         nodeLayer.appendChild(ht);
       }
-      var hitR = Math.max(18 / cam.k, 0);
-      ht.setAttribute("cx", n.x); ht.setAttribute("cy", n.y); ht.setAttribute("r", hitR);
-      ht.setAttribute("opacity", n.fade === undefined ? 1 : n.fade);
+      if (nodeDirty) {
+        ht.setAttribute("cx", n.x); ht.setAttribute("cy", n.y);
+        ht.setAttribute("opacity", n.fade === undefined ? 1 : n.fade);
+      }
 
       var c = nodeEls[n.id];
       if (!c) {
@@ -433,17 +698,21 @@ const RENDERER_JS: &str = r##"
       // when zoomed out) and never exceed ~120px on screen (so a heavily
       // visited node can not cover the view, even fully zoomed in).
       var visR = Math.min(Math.max(r, 5 / cam.k), 120 / cam.k);
-      var isSel = selected && selected.id === n.id;
-      var isHov = hoveredId === n.id;
-      c.setAttribute("cx", n.x); c.setAttribute("cy", n.y); c.setAttribute("r", visR);
-      c.setAttribute("fill", color(n));
-      c.setAttribute("stroke", isSel ? "#f0f6fc" : isHov ? "#ffd33d" : "#30363d");
-      c.setAttribute("stroke-width", isSel || isHov ? 3 : 2);
-      c.setAttribute("opacity", n.fade === undefined ? 1 : n.fade);
+      if (nodeDirty) { c.setAttribute("cx", n.x); c.setAttribute("cy", n.y); }
+      if (nodeDirty || camDirty) { c.setAttribute("r", visR); ht.setAttribute("r", Math.max(18 / cam.k, 0)); }
+      if (nodeDirty || camDirty) { c.setAttribute("fill", color(n)); }
+      if (focusDirty || nodeDirty) {
+        var isSel = selected && selected.id === n.id;
+        var isHov = hoveredId === n.id;
+        c.setAttribute("stroke", isSel ? "#f0f6fc" : isHov ? "#ffd33d" : "#30363d");
+        c.setAttribute("stroke-width", isSel || isHov ? 3 : 2);
+      }
+      if (nodeDirty) { c.setAttribute("opacity", n.fade === undefined ? 1 : n.fade); }
     }
-    for (var key in linkEls) if (!usedLinks[key]) { linkEls[key].remove(); delete linkEls[key]; }
     for (var id in nodeEls) if (!usedNodes[id]) { nodeEls[id].remove(); delete nodeEls[id]; }
     for (var id in hitEls) if (!usedNodes[id]) { hitEls[id].remove(); delete hitEls[id]; }
+    nodeDirty = false;
+    focusDirty = false;
   }
   function fmtTs(ts) {
     var d = new Date(ts * 1000);
@@ -520,6 +789,10 @@ const SNAPSHOT_TEMPLATE: &str = r##"<!doctype html>
             border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; font-size: 11px; }
   #legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
                  margin-right: 6px; vertical-align: middle; }
+  #legend .lrow { cursor: pointer; padding: 2px 6px; margin: 0 -6px; border-radius: 4px;
+                  transition: background .12s; }
+  #legend .lrow:hover { background: #21262d; text-decoration: underline; }
+  #legend .lrow.pin { background: #21262d; box-shadow: inset 0 0 0 1px #8b949e; }
   #truncated { display: none; position: fixed; left: 12px; bottom: 12px; background: #3d2f00;
                border: 1px solid #9e6a03; color: #f2cc60; border-radius: 8px;
                padding: 6px 10px; font-size: 11px; }
@@ -572,7 +845,11 @@ const LIVE_TEMPLATE: &str = r##"<!doctype html>
             border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; font-size: 11px; }
   #legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
                  margin-right: 6px; vertical-align: middle; }
-  #status { position: fixed; right: 12px; top: 12px; background: rgba(13,17,23,.9);
+  #legend .lrow { cursor: pointer; padding: 2px 6px; margin: 0 -6px; border-radius: 4px;
+                  transition: background .12s; }
+   #legend .lrow:hover { background: #21262d; text-decoration: underline; }
+   #legend .lrow.pin { background: #21262d; box-shadow: inset 0 0 0 1px #8b949e; }
+   #status { position: fixed; right: 12px; top: 12px; background: rgba(13,17,23,.9);
             border: 1px solid #30363d; border-radius: 8px; padding: 6px 10px; font-size: 11px; }
   #status.live { border-color: #238636; color: #3fb950; }
   #truncated { display: none; position: fixed; left: 12px; bottom: 12px; background: #3d2f00;

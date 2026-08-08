@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 locus-core.workspace = true
 locus-mcp.workspace = true
+locus-testkit.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

@@ -182,6 +182,12 @@ fn read_ack(reader: &mut BufReader<&Stream>) -> std::io::Result<()> {
 }
 
 fn handle_connection(stream: TcpStream, store: Store, events: EventBus, max_nodes: usize) {
+    // The accept loop leaves the listener (and on macOS/BSD, its accepted
+    // connections) in non-blocking mode. Restore blocking I/O so response
+    // writes and the SSE send timeout behave like a normal blocking socket.
+    if stream.set_nonblocking(false).is_err() {
+        return;
+    }
     let _ = stream.set_read_timeout(Some(CONNECTION_READ_TIMEOUT));
     let reader = match stream.try_clone() {
         Ok(clone) => clone,

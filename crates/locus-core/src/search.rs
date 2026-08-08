@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::memory::{normalize_namespace, Memory, MemoryType};
@@ -104,19 +104,18 @@ impl Fts5SearchEngine {
         let namespace = query.namespace.as_ref().map(|s| s.trim().to_string());
         let memory_type = query.memory_type.map(MemoryType::as_str);
 
+        // Scan the FTS shadow table directly: it already carries title, content
+        // and the concatenated entity names for every memory, so a LIKE filter
+        // needs no per-row correlated subquery into memory_entities/entities.
         let mut sql = String::from(
             "
             SELECT
-                m.id,
-                substr(m.title || ' - ' || m.content, 1, 180) AS snippet
-            FROM memories m
+                f.memory_id,
+                substr(f.title || ' - ' || f.content, 1, 180) AS snippet
+            FROM memory_fts f
+            INNER JOIN memories m ON m.id = f.memory_id
             WHERE lower(
-                m.title || ' ' || m.content || ' ' || COALESCE((
-                    SELECT group_concat(e.name, ' ')
-                    FROM memory_entities me
-                    INNER JOIN entities e ON e.id = me.entity_id
-                    WHERE me.memory_id = m.id
-                ), '')
+                f.title || ' ' || f.content || ' ' || f.entities
             ) LIKE '%' || lower(?) || '%'
             ",
         );
@@ -223,13 +222,25 @@ impl SearchEngine for Fts5SearchEngine {
     }
 
     fn upsert(&self, memory: &Memory) -> Result<()> {
-        let conn = self.connect_rw()?;
-        conn.execute(
-            "DELETE FROM memory_fts WHERE memory_id = ?",
-            params![memory.id],
-        )?;
+        let mut conn = self.connect_rw()?;
+        let tx = conn.transaction()?;
 
-        conn.execute(
+        let existing_rowid: Option<i64> = tx
+            .query_row(
+                "SELECT fts_rowid FROM memory_fts_rowid WHERE memory_id = ?",
+                params![memory.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(rowid) = existing_rowid {
+            tx.execute("DELETE FROM memory_fts WHERE rowid = ?", params![rowid])?;
+            tx.execute(
+                "DELETE FROM memory_fts_rowid WHERE memory_id = ?",
+                params![memory.id],
+            )?;
+        }
+
+        tx.execute(
             "
             INSERT INTO memory_fts (memory_id, title, content, entities)
             VALUES (?, ?, ?, ?)
@@ -241,6 +252,12 @@ impl SearchEngine for Fts5SearchEngine {
                 memory.entities.join(" ")
             ],
         )?;
+        let new_rowid = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO memory_fts_rowid (memory_id, fts_rowid) VALUES (?, ?)",
+            params![memory.id, new_rowid],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -249,8 +266,24 @@ impl SearchEngine for Fts5SearchEngine {
             return Err(Error::InvalidInput("id must not be empty".to_string()));
         }
 
-        let conn = self.connect_rw()?;
-        conn.execute("DELETE FROM memory_fts WHERE memory_id = ?", params![id])?;
+        let mut conn = self.connect_rw()?;
+        let tx = conn.transaction()?;
+
+        let fts_rowid: Option<i64> = tx
+            .query_row(
+                "SELECT fts_rowid FROM memory_fts_rowid WHERE memory_id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(rowid) = fts_rowid {
+            tx.execute("DELETE FROM memory_fts WHERE rowid = ?", params![rowid])?;
+        }
+        tx.execute(
+            "DELETE FROM memory_fts_rowid WHERE memory_id = ?",
+            params![id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 }
