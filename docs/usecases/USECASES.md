@@ -1478,7 +1478,7 @@ sets rather than hand-rolled regexes.
 
 ## U-012: Performance Benchmarks
 
-Status: Ready for Review  
+Status: Done  
 Priority: P0  
 Depends On: U-003, U-006  
 Blocks: U-014
@@ -1522,8 +1522,8 @@ Add benchmarks and resource checks.
 - [x] All scope items complete.
 - [x] Benchmarks pass.
 - [x] Performance report documented.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
 
 ### Performance Report (U-012, 100,000 memories)
 
