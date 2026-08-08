@@ -547,6 +547,50 @@ fn full_command_roundtrip() {
     assert_eq!(after.payload.expect("payload")["count"], 0);
 }
 
+#[test]
+fn capture_writes_typed_memories_through_daemon() {
+    let daemon = TestDaemon::start(&["--no-idle-exit"]);
+
+    let captured = daemon.request(
+        command::CAPTURE,
+        serde_json::json!({
+            "namespace": "project:my-app",
+            "text": "We decided to use Postgres for the auth service. Prefer table-driven tests.",
+        }),
+    );
+    assert!(captured.ok, "capture response ok");
+    let payload = captured.payload.expect("capture payload");
+    assert_eq!(payload["written"], 2, "two memories written");
+    assert_eq!(payload["skipped_tasks"], 0);
+
+    // A second capture of the same summary must not duplicate memories.
+    let repeat = daemon.request(
+        command::CAPTURE,
+        serde_json::json!({
+            "namespace": "project:my-app",
+            "text": "We decided to use Postgres for the auth service. Prefer table-driven tests.",
+        }),
+    );
+    let repeat_payload = repeat.payload.expect("repeat payload");
+    assert_eq!(repeat_payload["written"], 0, "no duplicates on repeat");
+    assert_eq!(repeat_payload["skipped_duplicates"], 2);
+
+    // Captured memories are retrievable through the shared search path.
+    let searched = daemon.request(
+        command::SEARCH,
+        serde_json::json!({ "text": "Postgres auth", "namespace": "project:my-app" }),
+    );
+    let search_payload = searched.payload.expect("search payload");
+    assert_eq!(search_payload["count"], 1);
+
+    // The other namespace sees none of it.
+    let other = daemon.request(
+        command::SEARCH,
+        serde_json::json!({ "text": "Postgres", "namespace": "project:other" }),
+    );
+    assert_eq!(other.payload.expect("other payload")["count"], 0);
+}
+
 // --- Security ---------------------------------------------------------------
 
 #[cfg(unix)]

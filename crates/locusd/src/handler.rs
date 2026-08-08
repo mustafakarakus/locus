@@ -6,12 +6,13 @@ use std::time::Duration;
 
 use interprocess::local_socket::prelude::*;
 
+use locus_core::capture::CaptureTrigger;
 use locus_core::context::ContextBriefOptions;
 use locus_core::ipc::protocol::{
-    command, error_code, ConflictsRequest, ConflictsResponse, ContextRequest, ContextResponse,
-    EventsRequest, EventsResponse, ForgetRequest, ForgetResponse, PingResponse, ReindexResponse,
-    RememberRequest, RememberResponse, Request, Response, SearchRequest, SearchResponse, Warning,
-    MAX_MESSAGE_BYTES, PROTOCOL_VERSION,
+    command, error_code, CaptureRequest, CaptureResponse, ConflictsRequest, ConflictsResponse,
+    ContextRequest, ContextResponse, EventsRequest, EventsResponse, ForgetRequest, ForgetResponse,
+    PingResponse, ReindexResponse, RememberRequest, RememberResponse, Request, Response,
+    SearchRequest, SearchResponse, Warning, MAX_MESSAGE_BYTES, PROTOCOL_VERSION,
 };
 use locus_core::ipc::wire::{read_message, write_message, ReadOutcome};
 use locus_core::memory::{MemoryType, NewMemory};
@@ -201,6 +202,7 @@ fn route(shared: &Shared, request: &Request) -> Response {
         command::FORGET => handle_forget(shared, request),
         command::REINDEX => handle_reindex(shared, request),
         command::CONFLICTS => handle_conflicts(shared, request),
+        command::CAPTURE => handle_capture(shared, request),
         command::STOP => {
             shared.log().info("stop requested by client");
             shared.request_shutdown();
@@ -342,6 +344,31 @@ fn handle_reindex(shared: &Shared, request: &Request) -> Response {
     }
 }
 
+fn handle_capture(shared: &Shared, request: &Request) -> Response {
+    let payload: CaptureRequest = match parse_payload(request) {
+        Ok(payload) => payload,
+        Err(response) => return *response,
+    };
+
+    let trigger = CaptureTrigger {
+        namespace: payload.namespace,
+        text: payload.text,
+    };
+
+    match shared.writer().submit(WriterOp::Capture(trigger)) {
+        Ok(WriterOk::Captured(outcome)) => ok(
+            request,
+            &CaptureResponse {
+                written: outcome.written,
+                skipped_tasks: outcome.skipped_tasks,
+                skipped_duplicates: outcome.skipped_duplicates,
+            },
+        ),
+        Ok(_) => internal(shared, request, "unexpected writer result"),
+        Err(err) => error_response(shared, request, err),
+    }
+}
+
 fn handle_conflicts(shared: &Shared, request: &Request) -> Response {
     let payload: ConflictsRequest = match parse_payload(request) {
         Ok(payload) => payload,
@@ -359,7 +386,6 @@ fn handle_conflicts(shared: &Shared, request: &Request) -> Response {
         Err(err) => error_response(shared, request, err),
     }
 }
-
 fn parse_payload<T>(request: &Request) -> std::result::Result<T, Box<Response>>
 where
     T: serde::de::DeserializeOwned,

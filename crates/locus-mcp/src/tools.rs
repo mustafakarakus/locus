@@ -46,7 +46,7 @@ pub fn catalog() -> Vec<Tool> {
                         "type": "string",
                         "description": "Optional memory type filter.",
                         "enum": [
-                            "fact", "decision", "preference", "task",
+                            "fact", "decision", "preference", "constraint", "task",
                             "bug", "architecture", "code", "note"
                         ]
                     },
@@ -82,7 +82,7 @@ pub fn catalog() -> Vec<Tool> {
                         "type": "string",
                         "description": "Memory type (default: fact).",
                         "enum": [
-                            "fact", "decision", "preference", "task",
+                            "fact", "decision", "preference", "constraint", "task",
                             "bug", "architecture", "code", "note"
                         ]
                     },

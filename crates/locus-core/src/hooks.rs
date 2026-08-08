@@ -159,7 +159,7 @@ fn pre_tool_query(value: &serde_json::Value) -> String {
     }
 }
 
-fn project_namespace(cwd: &str) -> Option<String> {
+pub(crate) fn project_namespace(cwd: &str) -> Option<String> {
     let name = Path::new(cwd)
         .file_name()
         .and_then(|s| s.to_str())
@@ -170,7 +170,7 @@ fn project_namespace(cwd: &str) -> Option<String> {
     Some(format!("project:{name}"))
 }
 
-fn sanitize_name(raw: &str) -> String {
+pub(crate) fn sanitize_name(raw: &str) -> String {
     let s: String = raw
         .chars()
         .map(|c| {

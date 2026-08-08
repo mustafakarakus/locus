@@ -12,6 +12,7 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
+use locus_core::capture::{capture, CaptureOutcome, CaptureTrigger};
 use locus_core::events::EventBus;
 use locus_core::ipc::protocol::{MemoryEvent, MemoryEventKind, Warning};
 use locus_core::memory::NewMemory;
@@ -26,6 +27,8 @@ pub enum WriterOp {
     /// Best-effort access tracking bump (U-016); never read on the response
     /// path. Failures are dropped silently.
     RecordAccess(Vec<String>),
+    /// Capture a host compaction summary into typed memories (U-017).
+    Capture(CaptureTrigger),
 }
 
 /// The result of a successful writer operation.
@@ -34,6 +37,7 @@ pub enum WriterOk {
     Forgotten,
     Reindexed(usize),
     Recorded,
+    Captured(CaptureOutcome),
 }
 
 struct WriterJob {
@@ -125,6 +129,15 @@ fn run_op(store: &Store, events: &EventBus, op: WriterOp) -> Result<WriterOk> {
         WriterOp::RecordAccess(ids) => {
             let _ = store.record_access(&ids);
             Ok(WriterOk::Recorded)
+        }
+        WriterOp::Capture(trigger) => {
+            let outcome = capture(store, &trigger)?;
+            for id in &outcome.written_ids {
+                if let Ok(memory) = store.get_memory_by_id(id) {
+                    events.publish(&memory_event(MemoryEventKind::Created, &memory, 0));
+                }
+            }
+            Ok(WriterOk::Captured(outcome))
         }
     }
 }

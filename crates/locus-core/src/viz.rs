@@ -5,9 +5,10 @@
 //! page shares the same renderer but loads its initial data from `/data` and
 //! updates over an SSE `/events` stream.
 //!
-//! Every rendered string (node titles, edge labels) is passed through the
-//! secret scanner before serialization, so the rendered graph can never leak a
-//! detected secret even if one was stored verbatim via `allow_secret`.
+//! Every rendered string (node title/content/entities/namespace/memory-type
+//! and edge labels) is passed through the secret scanner before serialization,
+//! so the rendered graph can never leak a detected secret even if one was
+//! stored verbatim via `allow_secret`.
 
 use crate::graph::{GraphData, GraphEdge, GraphNode};
 use crate::Result;
@@ -25,6 +26,11 @@ fn redacted_graph(data: &GraphData) -> GraphData {
         .map(|node| GraphNode {
             title: redacted(&node.title),
             content: redacted(&node.content),
+            // namespace is user-supplied (CLI/host payload), so scan it too;
+            // memory_type is scanned for uniformity even though it is
+            // enum-derived and can never carry a secret.
+            namespace: redacted(&node.namespace),
+            memory_type: redacted(&node.memory_type),
             entities: node
                 .entities
                 .iter()
@@ -80,28 +86,88 @@ const RENDERER_JS: &str = r##"
   "use strict";
   var app = document.getElementById("app");
   var panel = document.getElementById("panel");
+  var legendEl = document.getElementById("legend");
   var truncatedEl = document.getElementById("truncated");
   var nodes = [];
   var nodeMap = {};
   var edges = [];
   var maxAccess = 1;
   var selected = null;
+  var hoveredId = null;
   var W = window.innerWidth, H = window.innerHeight;
   var svg, view, linkLayer, nodeLayer;
-  var nodeEls = {}, linkEls = {};
+  var nodeEls = {}, hitEls = {}, linkEls = {};
   var cam = { x: 0, y: 0, k: 1 };
   var autoFit = true, settleFrames = 0, userControlled = false;
   var drag = null, dragMoved = false;
 
+  // Absolute, per-visit dot growth: base radius with a logarithmic ramp so a
+  // node keeps getting bigger every time it is visited, but never beyond
+  // MAX_DOT_RADIUS. Growth is independent of the busiest node, so one very hot
+  // node can not shrink its neighbours. The draw() screen clamp guarantees a
+  // heavily visited node can never cover the view even fully zoomed in.
+  var BASE_DOT_RADIUS = 12;
+  var DOT_GROWTH = 9;
+  var MAX_DOT_RADIUS = 64;
   function radius(n) {
-    var t = maxAccess > 1 ? (n.acc || 0) / maxAccess : 0;
-    return 6 + 26 * Math.sqrt(t);
+    return Math.min(MAX_DOT_RADIUS, BASE_DOT_RADIUS + DOT_GROWTH * Math.log10(1 + (n.acc || 0)));
+  }
+  // Distribute namespace hues across the whole wheel using the golden angle,
+  // so many namespaces stay visually distinct. Hues are assigned per data set
+  // in sorted namespace order (see buildNsHues), guaranteeing adjacent
+  // namespaces land far apart on the wheel instead of colliding.
+  var GOLDEN_ANGLE = 137.508;
+  var nsHues = {};
+  function buildNsHues() {
+    nsHues = {};
+    var names = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var ns = nodes[i].ns || "global";
+      if (names.indexOf(ns) === -1) names.push(ns);
+    }
+    names.sort();
+    for (var k = 0; k < names.length; k++) {
+      if (names[k] === "global") continue;
+      nsHues[names[k]] = Math.round((k * GOLDEN_ANGLE) % 360);
+    }
+  }
+  function nsHue(ns) {
+    if (!ns || ns === "global") return -1;
+    if (nsHues[ns] !== undefined) return nsHues[ns];
+    var h = 0;
+    for (var i = 0; i < ns.length; i++) h = (h * 31 + ns.charCodeAt(i)) >>> 0;
+    return Math.round((h * GOLDEN_ANGLE) % 360);
   }
   function color(n) {
     var now = Date.now() / 1000;
     var ageDays = Math.max(0, (now - (n.updated || now)) / 86400);
     var t = Math.min(1, ageDays / 90);
-    return "hsl(340," + Math.round(90 - 45 * t) + "%," + Math.round(58 + 22 * t) + "%)";
+    var hue = nsHue(n.ns);
+    if (hue < 0) {
+      return "hsl(0,0%," + Math.round(55 + 22 * t) + "%)";
+    }
+    var sat = Math.round(70 - 35 * t);
+    var lit = Math.round(50 + 18 * t);
+    return "hsl(" + hue + "," + sat + "%," + lit + "%)";
+  }
+  function nsColor(ns) {
+    var hue = nsHue(ns);
+    if (hue < 0) return "hsl(0,0%,65%)";
+    return "hsl(" + hue + ",70%,52%)";
+  }
+  function buildLegend() {
+    if (!legendEl) return;
+    var seen = {};
+    for (var i = 0; i < nodes.length; i++) seen[nodes[i].ns] = true;
+    var lines = [];
+    Object.keys(seen).sort().forEach(function (ns) {
+      lines.push('<div><span class="dot" style="background:' + nsColor(ns) +
+        '"></span>' + esc(ns) + '</div>');
+    });
+    lines.push('<div>node size = retrieval frequency</div>');
+    lines.push('<div>brighter = more recently touched</div>');
+    lines.push('<div>hover to inspect &middot; click to pin</div>');
+    legendEl.innerHTML = lines.join("");
   }
   function fitCamera() {
     if (!nodes.length) return null;
@@ -127,6 +193,7 @@ const RENDERER_JS: &str = r##"
     linkLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
     nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
     nodeEls = {};
+    hitEls = {};
     linkEls = {};
     svg.appendChild(view);
     view.appendChild(linkLayer);
@@ -137,12 +204,42 @@ const RENDERER_JS: &str = r##"
       var c = e.target.closest && e.target.closest("circle");
       if (!c) return;
       var n = nodeMap[c.getAttribute("data-id")];
-      if (n) select(n);
+      if (!n) return;
+      if (selected && selected.id === n.id) {
+        // Clicking the pinned node again unpins it.
+        selected = null;
+        hidePanel();
+      } else {
+        select(n);
+      }
+    });
+    // Hover reveals the panel immediately; clicking pins it (the panel stays
+    // open even after the pointer leaves).
+    nodeLayer.addEventListener("pointerover", function (e) {
+      var c = e.target.closest && e.target.closest("circle");
+      if (!c) return;
+      var n = nodeMap[c.getAttribute("data-id")];
+      if (n && n.id !== hoveredId) {
+        hoveredId = n.id;
+        showPanel(n);
+      }
+    });
+    nodeLayer.addEventListener("pointerout", function (e) {
+      hoveredId = null;
+      // relatedTarget is what the pointer moved onto. Only hide when leaving
+      // nodes entirely (not onto another node, whose pointerover reopens the
+      // panel). If a node is pinned, revert the panel to it instead of hiding.
+      var rt = e.relatedTarget;
+      var onto = rt && rt.closest ? rt.closest("circle") : null;
+      if (!onto) {
+        if (selected) showPanel(selected);
+        else hidePanel();
+      }
     });
     svg.addEventListener("pointerdown", function (e) {
+      dragMoved = false;
       if (e.target === nodeLayer || e.target.closest && e.target.closest("circle")) return;
       drag = { x: e.clientX, y: e.clientY, camX: cam.x, camY: cam.y };
-      dragMoved = false;
       svg.setPointerCapture(e.pointerId);
     });
     svg.addEventListener("pointermove", function (e) {
@@ -197,6 +294,8 @@ const RENDERER_JS: &str = r##"
     fit();
     autoFit = true;
     settleFrames = 0;
+    buildNsHues();
+    buildLegend();
   }
   function scatter() {
     var r = 180;
@@ -210,12 +309,18 @@ const RENDERER_JS: &str = r##"
   function applyEvent(ev) {
     var n = nodeMap[ev.memory_id];
     if (!n) { refresh(); return; }
+    // Unknown memory_id means a memory created after the initial /data fetch;
+    // the event carries no title/content, so a full refresh pulls the node in.
+    // Existing nodes update in place (positions survive via the prev lookup).
     n.acc = (n.acc || 0) + (ev.access_delta || 0);
     if (n.acc > maxAccess) maxAccess = n.acc;
     n.updated = ev.timestamp;
     if (ev.access_delta) n.pulse = 1;
   }
   function tick() {
+    // Pairwise repulsion is O(n^2) per frame. Tuned for the graph node cap
+    // (DEFAULT_GRAPH_MAX_NODES, 300 -> ~45k checks/frame, cheap at 60fps).
+    // Raising that cap without rethinking this loop is where it will fall over.
     for (var i = 0; i < nodes.length; i++) {
       var a = nodes[i];
       for (var j = i + 1; j < nodes.length; j++) {
@@ -278,7 +383,10 @@ const RENDERER_JS: &str = r##"
       if (!a || !b) continue;
       var key = e.source + "|" + e.target;
       usedLinks[key] = true;
-      var active = selected && (e.source === selected.id || e.target === selected.id);
+      // Hover takes priority over the pinned node so hovering any node (even
+      // after pinning one) reveals its connections.
+      var focus = hoveredId || (selected ? selected.id : null);
+      var active = focus && (e.source === focus || e.target === focus);
       var ln = linkEls[key];
       if (!ln) {
         ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -294,23 +402,48 @@ const RENDERER_JS: &str = r##"
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i];
       usedNodes[n.id] = true;
+      // Hit target first (underneath): transparent, at least ~16px on screen so
+      // even tiny dots are easy to hover/touch. Screen size is zoom-invariant
+      // because the whole view group is scaled by cam.k.
+      var ht = hitEls[n.id];
+      if (!ht) {
+        ht = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        ht.setAttribute("data-id", n.id);
+        ht.setAttribute("fill", "transparent");
+        ht.setAttribute("stroke", "none");
+        ht.setAttribute("cursor", "pointer");
+        hitEls[n.id] = ht;
+        nodeLayer.appendChild(ht);
+      }
+      var hitR = Math.max(18 / cam.k, 0);
+      ht.setAttribute("cx", n.x); ht.setAttribute("cy", n.y); ht.setAttribute("r", hitR);
+      ht.setAttribute("opacity", n.fade === undefined ? 1 : n.fade);
+
       var c = nodeEls[n.id];
       if (!c) {
         c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         c.setAttribute("data-id", n.id);
         c.setAttribute("stroke-width", 2);
+        c.setAttribute("pointer-events", "none");
         nodeEls[n.id] = c;
         nodeLayer.appendChild(c);
       }
       var r = radius(n) * (1 + (n.pulse || 0) * 0.5);
-      c.setAttribute("cx", n.x); c.setAttribute("cy", n.y); c.setAttribute("r", r);
+      // Dots never shrink below ~5px on screen (so every node stays reachable
+      // when zoomed out) and never exceed ~120px on screen (so a heavily
+      // visited node can not cover the view, even fully zoomed in).
+      var visR = Math.min(Math.max(r, 5 / cam.k), 120 / cam.k);
+      var isSel = selected && selected.id === n.id;
+      var isHov = hoveredId === n.id;
+      c.setAttribute("cx", n.x); c.setAttribute("cy", n.y); c.setAttribute("r", visR);
       c.setAttribute("fill", color(n));
-      c.setAttribute("stroke", selected && selected.id === n.id ? "#f0f6fc" : "#30363d");
-      c.setAttribute("stroke-width", selected && selected.id === n.id ? 3 : 2);
+      c.setAttribute("stroke", isSel ? "#f0f6fc" : isHov ? "#ffd33d" : "#30363d");
+      c.setAttribute("stroke-width", isSel || isHov ? 3 : 2);
       c.setAttribute("opacity", n.fade === undefined ? 1 : n.fade);
     }
     for (var key in linkEls) if (!usedLinks[key]) { linkEls[key].remove(); delete linkEls[key]; }
     for (var id in nodeEls) if (!usedNodes[id]) { nodeEls[id].remove(); delete nodeEls[id]; }
+    for (var id in hitEls) if (!usedNodes[id]) { hitEls[id].remove(); delete hitEls[id]; }
   }
   function fmtTs(ts) {
     var d = new Date(ts * 1000);
@@ -321,9 +454,7 @@ const RENDERER_JS: &str = r##"
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch];
     });
   }
-  function select(n) {
-    selected = n;
-    panel.style.display = "block";
+  function fillPanel(n) {
     panel.innerHTML =
       '<h2>' + esc(n.title) + '</h2>' +
       '<div><span class="badge">' + esc(n.type) + '</span>' +
@@ -333,6 +464,17 @@ const RENDERER_JS: &str = r##"
       '<p><b>created</b> ' + fmtTs(n.created) + '</p>' +
       '<p><b>updated</b> ' + fmtTs(n.updated) + '</p>' +
       (n.entities.length ? '<p><b>entities</b> ' + n.entities.map(esc).join(", ") + '</p>' : "");
+  }
+  function showPanel(n) {
+    panel.style.display = "block";
+    fillPanel(n);
+  }
+  function hidePanel() {
+    panel.style.display = "none";
+  }
+  function select(n) {
+    selected = n;
+    showPanel(n);
   }
   function refresh() {
     fetch("/data").then(function (r) { return r.json(); }).then(setData);
@@ -387,9 +529,7 @@ const SNAPSHOT_TEMPLATE: &str = r##"<!doctype html>
 <div id="app"></div>
 <div id="panel"></div>
 <div id="legend">
-  <div><span class="dot" style="background:#e14d8c"></span>recently touched</div>
-  <div><span class="dot" style="background:#f5c6dd"></span>older</div>
-  <div>node size = retrieval frequency</div>
+  <div>namespaces</div>
 </div>
 <div id="truncated">Graph truncated to the configured node cap.</div>
 <script>
@@ -445,9 +585,7 @@ const LIVE_TEMPLATE: &str = r##"<!doctype html>
 <div id="panel"></div>
 <div id="status" class="live">live</div>
 <div id="legend">
-  <div><span class="dot" style="background:#e14d8c"></span>recently touched</div>
-  <div><span class="dot" style="background:#f5c6dd"></span>older</div>
-  <div>node size = retrieval frequency</div>
+  <div>namespaces</div>
 </div>
 <div id="truncated">Graph truncated to the configured node cap.</div>
 <script>
@@ -527,6 +665,20 @@ mod tests {
         );
         assert!(json.contains("[REDACTED:github-pat]"));
         assert!(json.contains("\"Deploy token\""));
+    }
+
+    #[test]
+    fn rendered_payload_redacts_namespace_and_memory_type() {
+        let mut data = sample();
+        data.nodes[0].namespace = "ghp_123456789012345678901234567890123456-ns".to_string();
+        data.nodes[0].memory_type = "ghp_123456789012345678901234567890123456-type".to_string();
+        let json = graph_payload_json(&data).unwrap();
+        assert!(
+            !json.contains("ghp_123456789012345678901234567890123456"),
+            "secret must not appear in namespace or memory_type"
+        );
+        assert!(json.contains("[REDACTED:github-pat]-ns"));
+        assert!(json.contains("[REDACTED:github-pat]-type"));
     }
 
     #[test]

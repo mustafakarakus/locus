@@ -278,7 +278,10 @@ impl Store {
             INNER JOIN memory_entities me2
                 ON me1.entity_id = me2.entity_id AND me1.memory_id < me2.memory_id
             INNER JOIN entities e ON e.id = me1.entity_id
+            INNER JOIN memories ma ON ma.id = me1.memory_id
+            INNER JOIN memories mb ON mb.id = me2.memory_id
             WHERE me1.memory_id IN ({placeholders}) AND me2.memory_id IN ({placeholders})
+              AND ma.namespace = mb.namespace
             ORDER BY a ASC, b ASC, e.name ASC
             "
         );
@@ -409,6 +412,33 @@ mod tests {
         for edge in &graph.edges {
             assert_eq!(edge.weight, 1);
         }
+    }
+
+    #[test]
+    fn graph_edges_never_cross_namespaces() {
+        let (store, _tmp) = test_store();
+        store
+            .insert_memory(memory("project:auth", "Postgres primary", &["postgres"]))
+            .unwrap();
+        store
+            .insert_memory(memory("project:billing", "Postgres billing", &["postgres"]))
+            .unwrap();
+
+        let graph = store.graph(GraphRequest::default()).unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        assert!(
+            graph.edges.is_empty(),
+            "nodes sharing an entity across namespaces must not be linked"
+        );
+
+        let scoped = store
+            .graph(GraphRequest {
+                namespace: Some("project:auth".to_string()),
+                ..GraphRequest::default()
+            })
+            .unwrap();
+        assert_eq!(scoped.nodes.len(), 1);
+        assert!(scoped.edges.is_empty());
     }
 
     #[test]
