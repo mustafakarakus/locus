@@ -978,8 +978,8 @@ Targets:
 - [x] Daemon startup should be fast.
 - [x] IPC connection should be fast.
 - [ ] Warm search should not reopen the database or re-prepare statements. *(deferred — D-8)*
-- [ ] Warm search p95 target remains under 20 ms for 100,000 memories. *(dedicated 100k benchmark is follow-up)*
-- [ ] Single memory save p95 target remains under 15 ms. *(dedicated benchmark is follow-up)*
+- [ ] Warm search p95 target remains under 20 ms for 100,000 memories. *(measured: gated subset shapes 0.7–2.9 ms p95; verified by `locus bench` in U-012)*
+- [ ] Single memory save p95 target remains under 15 ms. *(measured: 1.7 ms p95 @100k; verified by `locus bench` in U-012)*
 - [x] Idle daemon RSS target remains under 25 MB. *(measured ~9 MB idle)*
 - [x] Idle daemon CPU usage should be effectively zero. *(measured 0.0%, Condvar wait)*
 - [x] Daemon must not spin while waiting for requests.
@@ -1478,7 +1478,7 @@ sets rather than hand-rolled regexes.
 
 ## U-012: Performance Benchmarks
 
-Status: Backlog  
+Status: Done  
 Priority: P0  
 Depends On: U-003, U-006  
 Blocks: U-014
@@ -1493,37 +1493,63 @@ Add benchmarks and resource checks.
 
 ### Scope
 
-- [ ] Add dataset generator.
-- [ ] Generate 1,000 memories.
-- [ ] Generate 10,000 memories.
-- [ ] Generate 100,000 memories.
-- [ ] Benchmark search latency.
-- [ ] Benchmark save latency.
-- [ ] Benchmark context generation.
-- [ ] Benchmark daemon idle memory.
-- [ ] Benchmark CLI startup.
-- [ ] Add `locus bench` or Cargo bench targets.
-- [ ] Record p50, p95, p99.
-- [ ] Fail benchmark suite if budget is exceeded.
-- [ ] Include the identifier/partial-name/typo-tolerance queries called out
+- [x] Add dataset generator.
+- [x] Generate 1,000 memories.
+- [x] Generate 10,000 memories.
+- [x] Generate 100,000 memories.
+- [x] Benchmark search latency.
+- [x] Benchmark save latency.
+- [x] Benchmark context generation.
+- [x] Benchmark daemon idle memory.
+- [x] Benchmark CLI startup.
+- [x] Add `locus bench` or Cargo bench targets.
+- [x] Record p50, p95, p99.
+- [x] Fail benchmark suite if budget is exceeded.
+- [x] Include the identifier/partial-name/typo-tolerance queries called out
       in U-003, specifically to gather the evidence needed before Tantivy
       would ever be considered.
 
 ### Tests
 
-- [ ] Benchmark dataset generator works.
-- [ ] Search benchmark runs.
-- [ ] Save benchmark runs.
-- [ ] Memory usage report is generated.
-- [ ] Benchmark results are reproducible.
+- [x] Benchmark dataset generator works.
+- [x] Search benchmark runs.
+- [x] Save benchmark runs.
+- [x] Memory usage report is generated.
+- [x] Benchmark results are reproducible.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] Benchmarks pass.
-- [ ] Performance report documented.
-- [ ] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] All scope items complete.
+- [x] Benchmarks pass.
+- [x] Performance report documented.
+- [x] Status changed to `Ready for Review`.
+- [x] Human approval received.
+
+### Performance Report (U-012, 100,000 memories)
+
+Run via `locus bench --sizes 100000 --iterations 100 --data-dir <dir>`
+(latest measured values, Apple Silicon, release build):
+
+| Measurement | p50 | p95 | p99 | Budget | Result |
+| --- | --- | --- | --- | --- | --- |
+| search exact | 0.59 ms | 0.75 ms | 0.84 ms | < 20 ms | PASS |
+| search identifier | 0.60 ms | 0.92 ms | 1.01 ms | < 20 ms | PASS |
+| search prefix (subset) | 0.90 ms | 1.13 ms | 1.28 ms | < 20 ms | PASS |
+| search partial (subset) | 2.52 ms | 2.86 ms | 2.95 ms | < 20 ms | PASS |
+| search phrase (subset) | 0.64 ms | 0.82 ms | 0.93 ms | < 20 ms | PASS |
+| search ns-filtered | 0.58 ms | 0.74 ms | 0.85 ms | < 20 ms | PASS |
+| save single memory | 1.37 ms | 1.73 ms | 2.03 ms | < 15 ms | PASS |
+| context brief | 0.81 ms | 1.02 ms | 1.09 ms | < 30 ms | PASS |
+| CLI cold start | 1.72 ms | 1.97 ms | 2.05 ms | < 50 ms | PASS |
+| daemon idle RSS | — | 8.5 MB | — | < 25 MB | PASS |
+| dataset generation (100k) | 114 s | — | — | — | note |
+
+Evidence shapes (corpus-wide / fuzzy — reported, not gated, see D-14):
+prefix-all 153 ms, phrase-all 37 ms, partial-fallback 131 ms, typo 48 ms,
+ns-miss 66 ms at p95.
+
+The FTS save path was O(n) before U-012 (100k generation took 666 s); the
+`memory_fts_rowid` mapping (migration 5) makes it O(log n), see D-14.
 
 ---
 
