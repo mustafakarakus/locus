@@ -80,6 +80,7 @@ const RENDERER_JS: &str = r##"
   "use strict";
   var app = document.getElementById("app");
   var panel = document.getElementById("panel");
+  var legendEl = document.getElementById("legend");
   var truncatedEl = document.getElementById("truncated");
   var nodes = [];
   var nodeMap = {};
@@ -97,11 +98,42 @@ const RENDERER_JS: &str = r##"
     var t = maxAccess > 1 ? (n.acc || 0) / maxAccess : 0;
     return 6 + 26 * Math.sqrt(t);
   }
+  var NS_HUES = [210, 340, 150, 45, 275, 10, 190, 120];
+  function nsHue(ns) {
+    if (!ns || ns === "global") return -1;
+    var h = 0;
+    for (var i = 0; i < ns.length; i++) h = (h * 31 + ns.charCodeAt(i)) >>> 0;
+    return NS_HUES[h % NS_HUES.length];
+  }
   function color(n) {
     var now = Date.now() / 1000;
     var ageDays = Math.max(0, (now - (n.updated || now)) / 86400);
     var t = Math.min(1, ageDays / 90);
-    return "hsl(340," + Math.round(90 - 45 * t) + "%," + Math.round(58 + 22 * t) + "%)";
+    var hue = nsHue(n.ns);
+    if (hue < 0) {
+      return "hsl(0,0%," + Math.round(55 + 22 * t) + "%)";
+    }
+    var sat = Math.round(70 - 35 * t);
+    var lit = Math.round(50 + 18 * t);
+    return "hsl(" + hue + "," + sat + "%," + lit + "%)";
+  }
+  function nsColor(ns) {
+    var hue = nsHue(ns);
+    if (hue < 0) return "hsl(0,0%,65%)";
+    return "hsl(" + hue + ",70%,52%)";
+  }
+  function buildLegend() {
+    if (!legendEl) return;
+    var seen = {};
+    for (var i = 0; i < nodes.length; i++) seen[nodes[i].ns] = true;
+    var lines = [];
+    Object.keys(seen).sort().forEach(function (ns) {
+      lines.push('<div><span class="dot" style="background:' + nsColor(ns) +
+        '"></span>' + esc(ns) + '</div>');
+    });
+    lines.push('<div>node size = retrieval frequency</div>');
+    lines.push('<div>brighter = more recently touched</div>');
+    legendEl.innerHTML = lines.join("");
   }
   function fitCamera() {
     if (!nodes.length) return null;
@@ -140,9 +172,9 @@ const RENDERER_JS: &str = r##"
       if (n) select(n);
     });
     svg.addEventListener("pointerdown", function (e) {
+      dragMoved = false;
       if (e.target === nodeLayer || e.target.closest && e.target.closest("circle")) return;
       drag = { x: e.clientX, y: e.clientY, camX: cam.x, camY: cam.y };
-      dragMoved = false;
       svg.setPointerCapture(e.pointerId);
     });
     svg.addEventListener("pointermove", function (e) {
@@ -197,6 +229,7 @@ const RENDERER_JS: &str = r##"
     fit();
     autoFit = true;
     settleFrames = 0;
+    buildLegend();
   }
   function scatter() {
     var r = 180;
@@ -387,9 +420,7 @@ const SNAPSHOT_TEMPLATE: &str = r##"<!doctype html>
 <div id="app"></div>
 <div id="panel"></div>
 <div id="legend">
-  <div><span class="dot" style="background:#e14d8c"></span>recently touched</div>
-  <div><span class="dot" style="background:#f5c6dd"></span>older</div>
-  <div>node size = retrieval frequency</div>
+  <div>namespaces</div>
 </div>
 <div id="truncated">Graph truncated to the configured node cap.</div>
 <script>
@@ -445,9 +476,7 @@ const LIVE_TEMPLATE: &str = r##"<!doctype html>
 <div id="panel"></div>
 <div id="status" class="live">live</div>
 <div id="legend">
-  <div><span class="dot" style="background:#e14d8c"></span>recently touched</div>
-  <div><span class="dot" style="background:#f5c6dd"></span>older</div>
-  <div>node size = retrieval frequency</div>
+  <div>namespaces</div>
 </div>
 <div id="truncated">Graph truncated to the configured node cap.</div>
 <script>

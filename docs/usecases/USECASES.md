@@ -220,6 +220,7 @@ Canonical status, priority, dependencies, and blocks live inside each use case.
 | U-014 | Packaging and Release |
 | U-015 | Hook-Based Context Injection |
 | U-016 | Memory Visualization (Graph) |
+| U-017 | Session Compaction Capture |
 
 ---
 
@@ -1792,6 +1793,10 @@ drop-on-backpressure channel; a slow or hung viz client must not stall
 - [x] Build edge set from shared entities and explicit links (no graph
       database; relationships come from SQLite joins, per TECHSTACK).
 - [x] Support namespace scoping for the graph.
+- [x] Edges never connect memories from different namespaces (cross-namespace
+      entity sharing must not imply a relationship).
+- [x] Renderer colors nodes by namespace (distinct hue per namespace, gray for
+      `global`) with a legend naming each namespace.
 - [x] Support `--expand <id>` to focus one memory and its immediate context.
 - [x] Cap graph payloads (max nodes, max depth) so queries stay bounded.
 - [x] Graph queries run on their own read-only SQLite connections, never on the
@@ -1859,6 +1864,7 @@ drop-on-backpressure channel; a slow or hung viz client must not stall
 - [x] Snapshot mode makes no network calls.
 - [x] Graph node set matches the memories in scope (namespace filter).
 - [x] Graph edge set reflects shared entities.
+- [x] Graph edges never cross namespaces (test).
 - [x] `--expand <id>` shows the memory and its immediate links.
 - [x] Live mode receives `memory_created` and renders a new node.
 - [x] Live mode receives `memory_searched` and updates the visited counter.
@@ -1888,3 +1894,122 @@ drop-on-backpressure channel; a slow or hung viz client must not stall
 - [x] Graph data model documented.
 - [x] Status changed to `Ready for Review`.
 - [x] Human approval received.
+
+---
+
+## U-017: Session Compaction Capture
+
+Status: Backlog  
+Priority: P1  
+Depends On: U-004, U-006, U-007, U-011, U-015  
+Blocks: None
+
+### Problem
+
+When an agent session's context window fills (~90-100%), the host compacts the
+conversation into a summary and resets the working context. That summary is the
+highest-signal record of what the session produced — decisions made, preferences
+stated, constraints discovered — yet it is currently thrown away. The result is
+lost long-term memory across tools (Cursor, Claude Code, Copilot, DeepSeek) and
+across sessions: the same project gets re-litigated because nothing durable was
+captured.
+
+The compacted text must become durable, shared, retrievable memory — not raw
+chat history, but discrete typed memories any agent can retrieve later.
+
+### Solution
+
+Add a host-independent capture path: when a host compacts its context, a
+host-specific adapter forwards the compacted text to `locus-core`, where a
+**deterministic rule-based extractor** (no LLM call) splits it into discrete,
+typed memories and writes them through the existing store path.
+
+This is the write-side mirror of U-015 (hook-based injection). U-015 injects a
+brief before reasoning; U-017 captures when context is reset. Both map a host
+lifecycle event to a single internal call into `locus-core`.
+
+### Key decisions
+
+- [ ] Extraction is rule-based and deterministic — no LLM dependency in the
+      default capture path. Deterministic means the same compacted text always
+      yields the same memories, regardless of which host or model produced it
+      (a shared store must not vary per model).
+- [ ] Extraction is zero-cost in the capture path (microseconds, local).
+- [ ] Capture writes discrete typed memories through the existing store write
+      path (namespace, redaction, dedupe) — never a raw summary blob.
+- [ ] Optional LLM refinement may be added later behind a flag, never as a
+      default dependency.
+
+### Extractor scope
+
+- [ ] Split the compacted summary into sentences.
+- [ ] Classify each sentence into a `MemoryType` via cue-word patterns:
+      decisions ("use X", "choose X", "standardize on X"), preferences
+      ("prefer X", "avoid X"), constraints ("must not", "requires"), tasks
+      ("in progress", "next step"), fallback to `Fact`/`Note`.
+- [ ] Title = leading phrase of the sentence; content = the sentence.
+- [ ] Importance by cue word strength (Decision/Preference higher, Note/Task
+      lower).
+- [ ] Extract entities via the existing `normalize_entities` plus simple
+      proper-noun/camelCase tokens.
+- [ ] Dedupe candidates against the shared store using the existing
+      `normalize_for_dedupe` + `near_duplicate` logic so repeat captures do not
+      multiply memories.
+- [ ] Must handle host variance: the extractor normalizes summaries regardless
+      of which host (Cursor/Claude Code/Copilot/DeepSeek) produced them. The
+      extractor lives in `locus-core`; adapters only forward the text.
+
+### Capture path scope
+
+- [ ] Add a `capture` internal call in `locus-core` that takes compacted text
+      plus a namespace and writes extracted memories.
+- [ ] Add host-specific adapters (mirroring the U-015 adapter pattern) that map
+      each host's compaction lifecycle event to the single `capture` call.
+- [ ] Extraction runs on the compacted summary only; raw chat transcripts are
+      never captured.
+- [ ] Capture writes go through the same namespace scoping and U-011 redaction
+      as any other write.
+- [ ] Capture is bounded in cost: extract only durable categories
+      (Decision/Preference/Constraint), skip session-transient task state.
+- [ ] Capture must not block the host's compaction; it is fire-and-forget.
+
+### Security scope
+
+- [ ] Extracted memories pass through U-011 write-time redaction.
+- [ ] Namespace isolation: captures are scoped to the session's namespace and
+      never leak across namespaces.
+- [ ] No network calls; capture is fully local.
+
+### Tests
+
+- [ ] Compaction text produces the expected typed memories (decisions,
+      preferences, constraints).
+- [ ] Same input always produces identical output (deterministic).
+- [ ] Repeat capture of the same session does not duplicate memories.
+- [ ] Host-specific adapter forwards its compaction payload correctly.
+- [ ] Capture output matches the store write path (namespace + redaction
+      applied).
+- [ ] Unrelated/cue-word-free summary falls back to `Fact`/`Note`, never drops
+      silently.
+- [ ] Capture is read-only-safe: it never mutates beyond its own writes.
+- [ ] Capture latency stays within the single-save p95 budget.
+- [ ] Captured memories are retrievable by a second agent via the shared
+      `ContextBrief` path.
+- [ ] No secrets present in captured memories.
+
+### Out of Scope
+
+- LLM-based summarization or refinement in the default path (optional, behind
+  a flag, later).
+- Storing raw chat transcripts or the full compaction summary as a memory.
+- Capturing transient task state (in-progress status, ephemeral next steps).
+- Adapters for hosts without a compaction lifecycle event.
+
+### Definition of Done
+
+- [ ] All scope items complete.
+- [ ] All tests green.
+- [ ] Extractor heuristics documented.
+- [ ] Adapter approach documented (mirrors U-015).
+- [ ] Status changed to `Ready for Review`.
+- [ ] Human approval received.
