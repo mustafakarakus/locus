@@ -5,9 +5,10 @@
 //! page shares the same renderer but loads its initial data from `/data` and
 //! updates over an SSE `/events` stream.
 //!
-//! Every rendered string (node titles, edge labels) is passed through the
-//! secret scanner before serialization, so the rendered graph can never leak a
-//! detected secret even if one was stored verbatim via `allow_secret`.
+//! Every rendered string (node title/content/entities/namespace/memory-type
+//! and edge labels) is passed through the secret scanner before serialization,
+//! so the rendered graph can never leak a detected secret even if one was
+//! stored verbatim via `allow_secret`.
 
 use crate::graph::{GraphData, GraphEdge, GraphNode};
 use crate::Result;
@@ -25,6 +26,11 @@ fn redacted_graph(data: &GraphData) -> GraphData {
         .map(|node| GraphNode {
             title: redacted(&node.title),
             content: redacted(&node.content),
+            // namespace is user-supplied (CLI/host payload), so scan it too;
+            // memory_type is scanned for uniformity even though it is
+            // enum-derived and can never carry a secret.
+            namespace: redacted(&node.namespace),
+            memory_type: redacted(&node.memory_type),
             entities: node
                 .entities
                 .iter()
@@ -303,12 +309,18 @@ const RENDERER_JS: &str = r##"
   function applyEvent(ev) {
     var n = nodeMap[ev.memory_id];
     if (!n) { refresh(); return; }
+    // Unknown memory_id means a memory created after the initial /data fetch;
+    // the event carries no title/content, so a full refresh pulls the node in.
+    // Existing nodes update in place (positions survive via the prev lookup).
     n.acc = (n.acc || 0) + (ev.access_delta || 0);
     if (n.acc > maxAccess) maxAccess = n.acc;
     n.updated = ev.timestamp;
     if (ev.access_delta) n.pulse = 1;
   }
   function tick() {
+    // Pairwise repulsion is O(n^2) per frame. Tuned for the graph node cap
+    // (DEFAULT_GRAPH_MAX_NODES, 300 -> ~45k checks/frame, cheap at 60fps).
+    // Raising that cap without rethinking this loop is where it will fall over.
     for (var i = 0; i < nodes.length; i++) {
       var a = nodes[i];
       for (var j = i + 1; j < nodes.length; j++) {
@@ -653,6 +665,20 @@ mod tests {
         );
         assert!(json.contains("[REDACTED:github-pat]"));
         assert!(json.contains("\"Deploy token\""));
+    }
+
+    #[test]
+    fn rendered_payload_redacts_namespace_and_memory_type() {
+        let mut data = sample();
+        data.nodes[0].namespace = "ghp_123456789012345678901234567890123456-ns".to_string();
+        data.nodes[0].memory_type = "ghp_123456789012345678901234567890123456-type".to_string();
+        let json = graph_payload_json(&data).unwrap();
+        assert!(
+            !json.contains("ghp_123456789012345678901234567890123456"),
+            "secret must not appear in namespace or memory_type"
+        );
+        assert!(json.contains("[REDACTED:github-pat]-ns"));
+        assert!(json.contains("[REDACTED:github-pat]-type"));
     }
 
     #[test]
