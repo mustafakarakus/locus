@@ -1,3 +1,4 @@
+pub mod bench;
 pub mod conflicts;
 pub mod context;
 pub mod daemon;

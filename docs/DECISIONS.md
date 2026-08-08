@@ -288,5 +288,41 @@ search latency budget must not be disturbed.
   rendered graph can never contain a stored secret, even one inserted with
   `--allow-secret` (that flag consents to *storage*, not to rendering).
 
+### D-14 — U-012 FTS rowid mapping and benchmark gating
+Decisions made while implementing Performance Benchmarks. Two findings surfaced
+by the first 100k run are now locked in.
+
+- **The FTS delete-on-save was O(n), now O(log n) via a rowid mapping.**
+  `memory_id` is `UNINDEXED` in `memory_fts`, so `DELETE ... WHERE memory_id = ?`
+  forced a full FTS index scan on every save (measured: 3.3 ms at 30k and
+  growing linearly — 100k dataset generation took 666 s). Migration 5 adds
+  `memory_fts_rowid (memory_id → fts_rowid)`; upserts/updates/deletes resolve
+  the FTS row by rowid instead. Generation of the 100k dataset dropped to 88 s
+  (then ~114 s once the fallback scan was also corrected) and stays linear.
+  The migration drops orphaned FTS rows before backfilling so a pre-existing
+  database with stale FTS entries upgrades cleanly. This is the save-path fix;
+  it keeps the single-memory save p95 comfortably under the 15 ms budget.
+
+- **The LIKE fallback scans `memory_fts`, not `memories` + correlated subquery.**
+  Zero-hit queries (typo, partial non-token, namespace miss) fell back to a
+  full `memories` scan with a per-row `group_concat` subquery into the entity
+  tables (190 ms at 100k). The fallback now scans the FTS shadow table, which
+  already carries title/content/entities concatenated, joining `memories` only
+  for namespace/type filters — a 4x improvement (190 ms → ~47 ms at 100k).
+  This is still a linear scan, so it remains a documented ceiling for
+  fuzzy/typo search; it is not the gate.
+
+- **`locus bench` gates realistic warm-search shapes; corpus-wide and
+  fuzzy/typo shapes are reported as evidence, not gated.** The 20 ms budget is
+  asserted on queries that match a bounded subset of the corpus (exact,
+  identifier, prefix, partial, phrase, namespace-filtered). Shapes that match
+  the entire corpus (`verify*`, `"auth middleware"`) or exercise the LIKE
+  fallback (typo, partial-non-token, namespace miss) are inherently O(matches)
+  in any lexical engine, so they are measured and printed as `[note]` evidence
+  for the D-1 Tantivy decision (which U-012 explicitly exists to inform) rather
+  than failing the suite. Budgets: warm search p95 < 20 ms @100k, save p95
+  < 15 ms, context p95 < 30 ms, CLI cold start p95 < 50 ms, daemon idle RSS
+  < 25 MB.
+
 
 

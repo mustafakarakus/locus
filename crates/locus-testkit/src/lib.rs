@@ -1,7 +1,11 @@
 //! Shared testing utilities for Locus.
 //!
-//! Scaffolding at U-001. Fixtures, the dataset generator, an MCP test client,
-//! and benchmark helpers are added alongside the use cases that need them.
+//! Scaffolding at U-001. Fixtures, the dataset generator (U-012), an MCP test
+//! client, and benchmark helpers are added alongside the use cases that need
+//! them.
+
+pub mod dataset;
+pub mod stats;
 
 /// Returns the core crate version, used by smoke tests to confirm the testkit
 /// links against `locus-core`.

@@ -130,6 +130,28 @@ CREATE INDEX IF NOT EXISTS idx_memories_access_count ON memories(access_count);
 CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON memories(last_accessed_at);
 ",
     ),
+    (
+        5,
+        "fts_rowid_mapping",
+        "
+CREATE TABLE IF NOT EXISTS memory_fts_rowid (
+    memory_id TEXT PRIMARY KEY,
+    fts_rowid INTEGER NOT NULL,
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
+-- Drop orphaned FTS rows (no matching memories row) so the backfill below
+-- never violates the foreign key; they are unreachable via search anyway.
+DELETE FROM memory_fts
+WHERE NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = memory_fts.memory_id);
+
+-- Backfill the mapping for FTS rows created before this migration so
+-- delete/update paths can target the FTS rowid (O(log n)) instead of
+-- scanning the whole FTS index on the UNINDEXED memory_id column.
+INSERT OR IGNORE INTO memory_fts_rowid (memory_id, fts_rowid)
+SELECT memory_id, rowid FROM memory_fts;
+",
+    ),
 ];
 
 /// SQLite-backed storage for canonical memories.
@@ -301,12 +323,25 @@ impl Store {
 
         let mut conn = self.connect_rw()?;
         let tx = conn.transaction()?;
+
+        // Delete the FTS row by rowid first (O(log n) via the mapping), then
+        // the memory row. The FK cascade cleans up the mapping row itself.
+        let fts_rowid: Option<i64> = tx
+            .query_row(
+                "SELECT fts_rowid FROM memory_fts_rowid WHERE memory_id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(rowid) = fts_rowid {
+            tx.execute("DELETE FROM memory_fts WHERE rowid = ?", params![rowid])?;
+        }
+
         let affected = tx.execute("DELETE FROM memories WHERE id = ?", params![id])?;
         if affected == 0 {
             return Err(Error::NotFound("memory not found".to_string()));
         }
 
-        tx.execute("DELETE FROM memory_fts WHERE memory_id = ?", params![id])?;
         tx.commit()?;
         Ok(())
     }
@@ -852,16 +887,36 @@ fn upsert_fts_row(
         |row| row.get(0),
     )?;
 
-    tx.execute(
-        "DELETE FROM memory_fts WHERE memory_id = ?",
-        params![memory_id],
-    )?;
+    // Delete any existing FTS row by rowid. `memory_id` is UNINDEXED in the
+    // FTS table, so a `WHERE memory_id = ?` delete would scan the entire FTS
+    // index (O(n) per save). The memory_fts_rowid mapping turns this into an
+    // O(log n) rowid lookup + delete.
+    let existing_rowid: Option<i64> = tx
+        .query_row(
+            "SELECT fts_rowid FROM memory_fts_rowid WHERE memory_id = ?",
+            params![memory_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(rowid) = existing_rowid {
+        tx.execute("DELETE FROM memory_fts WHERE rowid = ?", params![rowid])?;
+        tx.execute(
+            "DELETE FROM memory_fts_rowid WHERE memory_id = ?",
+            params![memory_id],
+        )?;
+    }
+
     tx.execute(
         "
         INSERT INTO memory_fts (memory_id, title, content, entities)
         VALUES (?, ?, ?, ?)
         ",
         params![memory_id, title, content, entities],
+    )?;
+    let new_rowid = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO memory_fts_rowid (memory_id, fts_rowid) VALUES (?, ?)",
+        params![memory_id, new_rowid],
     )?;
     Ok(())
 }
