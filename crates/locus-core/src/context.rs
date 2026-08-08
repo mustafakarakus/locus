@@ -58,16 +58,27 @@ impl Category {
 }
 
 pub fn build_context_brief(memories: &[Memory], options: ContextBriefOptions) -> String {
+    build_context_brief_with_selected(memories, options).0
+}
+
+/// Like [`build_context_brief`], but also returns the memories that made it
+/// into the final brief (after dedupe and budget capping). Used by the daemon
+/// to record access and emit live events for exactly what was surfaced
+/// (U-016).
+pub fn build_context_brief_with_selected(
+    memories: &[Memory],
+    options: ContextBriefOptions,
+) -> (String, Vec<&Memory>) {
     let budget = options.token_budget.max(1);
     if memories.is_empty() {
-        return NO_RELEVANT_MEMORY.to_string();
+        return (NO_RELEVANT_MEMORY.to_string(), Vec::new());
     }
 
     let mut items = memories.iter().map(memory_to_item).collect::<Vec<_>>();
 
     dedupe_items(&mut items);
     if items.is_empty() {
-        return NO_RELEVANT_MEMORY.to_string();
+        return (NO_RELEVANT_MEMORY.to_string(), Vec::new());
     }
 
     items.sort_by(|left, right| {
@@ -78,7 +89,16 @@ pub fn build_context_brief(memories: &[Memory], options: ContextBriefOptions) ->
             .then_with(|| left.id.cmp(&right.id))
     });
 
-    render_with_budget(&items, budget)
+    let (brief, selected_items) = render_with_budget(&items, budget);
+    let selected = if brief == NO_RELEVANT_MEMORY {
+        Vec::new()
+    } else {
+        selected_items
+            .into_iter()
+            .filter_map(|item| memories.iter().find(|memory| memory.id == item.id))
+            .collect()
+    };
+    (brief, selected)
 }
 
 pub fn estimated_tokens(markdown: &str) -> usize {
@@ -214,12 +234,7 @@ fn near_duplicate(left: &str, right: &str) -> bool {
     false
 }
 
-fn render_with_budget(items: &[BriefItem], token_budget: usize) -> String {
-    let mut grouped: HashMap<Category, Vec<&BriefItem>> = HashMap::new();
-    for item in items {
-        grouped.entry(item.category).or_default().push(item);
-    }
-
+fn render_with_budget(items: &[BriefItem], token_budget: usize) -> (String, Vec<&BriefItem>) {
     let categories = [
         Category::Decisions,
         Category::Preferences,
@@ -228,27 +243,30 @@ fn render_with_budget(items: &[BriefItem], token_budget: usize) -> String {
     ];
 
     let mut selected_by_category: HashMap<Category, Vec<&str>> = HashMap::new();
+    let mut selected: Vec<&BriefItem> = Vec::new();
 
     for item in items {
         selected_by_category
             .entry(item.category)
             .or_default()
             .push(item.text.as_str());
+        selected.push(item);
 
         let rendered = render_markdown(&categories, &selected_by_category);
         if estimated_tokens(&rendered) > token_budget {
             if let Some(bucket) = selected_by_category.get_mut(&item.category) {
                 bucket.pop();
             }
+            selected.pop();
             break;
         }
     }
 
     let markdown = render_markdown(&categories, &selected_by_category);
     if selected_by_category.values().all(Vec::is_empty) {
-        NO_RELEVANT_MEMORY.to_string()
+        (NO_RELEVANT_MEMORY.to_string(), Vec::new())
     } else {
-        markdown
+        (markdown, selected)
     }
 }
 
@@ -293,6 +311,8 @@ mod tests {
             source: None,
             created_at: updated_at,
             updated_at,
+            access_count: 0,
+            last_accessed_at: None,
         }
     }
 

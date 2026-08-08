@@ -1,0 +1,24 @@
+[package]
+name = "locus-viz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loopback HTTP + SSE viewer for the live Locus memory graph."
+
+[[bin]]
+name = "locus-viz"
+path = "src/main.rs"
+
+[dependencies]
+locus-core.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+interprocess.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
