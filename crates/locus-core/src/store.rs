@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::conflict::{self, ConflictRecord};
 use crate::context::{self, ContextBriefOptions};
+use crate::ipc::paths::Paths;
 use crate::ipc::protocol::Warning;
 use crate::memory::{
     normalize_entities, normalize_namespace, normalize_optional, validate_content,
@@ -17,8 +18,6 @@ use crate::memory::{
 };
 use crate::search::{self, Fts5SearchEngine, Hit, Query, RankSignals, SearchEngine};
 use crate::{Error, Result};
-
-const DB_FILE_NAME: &str = "locus.db";
 
 const PRAGMAS: &[&str] = &[
     "PRAGMA journal_mode = WAL;",
@@ -792,10 +791,9 @@ impl Store {
 }
 
 fn default_db_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .map_err(|_| Error::Other("HOME environment variable is not set".to_string()))?;
-    Ok(home.join(".locus").join(DB_FILE_NAME))
+    // Honor LOCUS_HOME exactly like the daemon so the CLI and MCP/daemon
+    // always operate on the same store.
+    Ok(Paths::resolve()?.db_file())
 }
 
 fn run_migrations(conn: &Connection) -> Result<()> {
@@ -1046,6 +1044,27 @@ mod tests {
 
         assert!(first.is_ok());
         assert!(second.is_ok());
+    }
+
+    #[test]
+    fn open_default_honors_locus_home() {
+        let tmp = TempDir::new().expect("temp dir");
+        let data_dir = tmp.path().to_path_buf();
+        let previous = std::env::var_os(crate::ipc::paths::HOME_ENV);
+
+        std::env::set_var(crate::ipc::paths::HOME_ENV, &data_dir);
+        let store = Store::open_default().expect("open default under LOCUS_HOME");
+        assert_eq!(
+            store.db_path(),
+            data_dir.join("locus.db"),
+            "default store must live under LOCUS_HOME, matching the daemon"
+        );
+        assert!(store.db_path().exists());
+
+        match previous {
+            Some(value) => std::env::set_var(crate::ipc::paths::HOME_ENV, value),
+            None => std::env::remove_var(crate::ipc::paths::HOME_ENV),
+        }
     }
 
     #[test]
