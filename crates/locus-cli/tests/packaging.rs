@@ -138,6 +138,38 @@ fn install_script_installs_to_temp_prefix() {
     assert!(version.status.success());
 }
 
+#[test]
+fn install_script_initializes_invocation_repository() {
+    let tmp = TempDir::new().expect("temp dir");
+    let project = tmp.path().join("project");
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir(&project).expect("create project");
+    let git = Command::new("git")
+        .arg("init")
+        .arg(&project)
+        .output()
+        .expect("initialize Git repository");
+    assert!(git.status.success());
+
+    let out = Command::new("sh")
+        .arg(script_path("install.sh"))
+        .arg("--from")
+        .arg(built_bin_dir())
+        .arg("--bin-dir")
+        .arg(&bin_dir)
+        .current_dir(&project)
+        .output()
+        .expect("run install.sh");
+    assert!(
+        out.status.success(),
+        "install.sh failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(project.join(".mcp.json").is_file());
+    assert!(project.join(".claude/settings.json").is_file());
+    assert!(project.join(".git/hooks/post-commit").is_file());
+}
+
 // ---------------------------------------------------------------------------
 // Uninstall script works
 // ---------------------------------------------------------------------------
