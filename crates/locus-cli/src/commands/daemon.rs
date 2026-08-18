@@ -126,8 +126,20 @@ fn start(paths: &Paths, client: &DaemonClient) -> Result<()> {
 }
 
 fn stop(client: &DaemonClient) -> Result<()> {
+    stop_inner(client, true)
+}
+
+/// Stops the daemon without writing status text, for commands that must emit a
+/// single machine-readable response after gaining exclusive write access.
+pub(crate) fn stop_if_running(client: &DaemonClient) -> Result<()> {
+    stop_inner(client, false)
+}
+
+fn stop_inner(client: &DaemonClient, announce: bool) -> Result<()> {
     if !client.is_running() {
-        println!("locusd is not running");
+        if announce {
+            println!("locusd is not running");
+        }
         return Ok(());
     }
 
@@ -139,7 +151,9 @@ fn stop(client: &DaemonClient) -> Result<()> {
     let deadline = Instant::now() + STOP_TIMEOUT;
     while Instant::now() < deadline {
         if !client.is_running() {
-            println!("locusd stopped");
+            if announce {
+                println!("locusd stopped");
+            }
             return Ok(());
         }
         std::thread::sleep(POLL_INTERVAL);

@@ -14,12 +14,12 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.97"
 license = "MIT"
-repository = "https://github.com/locus/locus"
+repository = "https://github.com/mustafakarakus/locus"
 
 [workspace.dependencies]
-locus-core = { path = "crates/locus-core" }
-locus-mcp = { path = "crates/locus-mcp" }
-locus-testkit = { path = "crates/locus-testkit" }
+locus-core = { version = "0.1.0", path = "crates/locus-core" }
+locus-mcp = { version = "0.1.0", path = "crates/locus-mcp" }
+locus-testkit = { version = "0.1.0", path = "crates/locus-testkit" }
 
 anyhow = "1"
 thiserror = "1"
@@ -30,6 +30,7 @@ time = { version = "0.3", features = ["std", "formatting"] }
 tempfile = "3"
 criterion = "0.5"
 clap = { version = "4", features = ["derive", "cargo"] }
+clap_complete = "4.5"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 interprocess = "2"

@@ -70,9 +70,18 @@ pub fn significant_words(text: &str) -> Vec<String> {
 /// Returns the number of significant words shared between `title_a` and
 /// `title_b`.
 pub fn shared_word_count(title_a: &str, title_b: &str) -> usize {
+    shared_word_list(title_a, title_b).len()
+}
+
+/// Returns the significant words shared between `title_a` and `title_b`.
+pub fn shared_word_list(title_a: &str, title_b: &str) -> Vec<String> {
     let words_a = significant_words(title_a);
     let words_b = significant_words(title_b);
-    words_a.iter().filter(|w| words_b.contains(w)).count()
+    words_a
+        .iter()
+        .filter(|w| words_b.contains(w))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]

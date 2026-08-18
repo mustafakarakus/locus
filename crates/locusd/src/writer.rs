@@ -29,6 +29,8 @@ pub enum WriterOp {
     RecordAccess(Vec<String>),
     /// Capture a host compaction summary into typed memories (U-017).
     Capture(CaptureTrigger),
+    /// Drain marker: the writer finishes every already-queued op, then exits.
+    Shutdown,
 }
 
 /// The result of a successful writer operation.
@@ -87,17 +89,30 @@ impl WriterHandle {
 /// Spawns the writer thread and returns its handle plus join handle.
 ///
 /// The thread exits cleanly when every [`WriterHandle`] is dropped.
-pub fn spawn(store: Store, events: EventBus) -> (WriterHandle, JoinHandle<()>) {
+pub fn spawn(store: Store, events: EventBus) -> (WriterHandle, Option<JoinHandle<()>>) {
     let (tx, rx) = mpsc::channel::<WriterJob>();
-    let join = std::thread::Builder::new()
+    let join = match std::thread::Builder::new()
         .name("locusd-writer".to_string())
         .spawn(move || writer_loop(store, rx, events))
-        .expect("failed to spawn writer thread");
+    {
+        Ok(join) => Some(join),
+        // A failed spawn must not abort the whole daemon (release builds use
+        // panic = "abort"); the store simply runs shared-single-writer-free.
+        Err(err) => {
+            tracing::error!(target: "locusd", "failed to spawn writer thread: {err}");
+            None
+        }
+    };
     (WriterHandle { tx }, join)
 }
 
 fn writer_loop(store: Store, rx: Receiver<WriterJob>, events: EventBus) {
     while let Ok(job) = rx.recv() {
+        if matches!(job.op, WriterOp::Shutdown) {
+            // Drain marker: every job queued before this one has already been
+            // received (recv is FIFO); nothing may be enqueued after shutdown.
+            break;
+        }
         let result = run_op(&store, &events, job.op);
         // The receiver may have gone away if the client disconnected; ignore.
         if let Some(reply) = job.reply {
@@ -138,6 +153,11 @@ fn run_op(store: &Store, events: &EventBus, op: WriterOp) -> Result<WriterOk> {
                 }
             }
             Ok(WriterOk::Captured(outcome))
+        }
+        WriterOp::Shutdown => {
+            // Unreachable in practice (writer_loop breaks on the marker before
+            // dispatching), but keep the match exhaustive.
+            Ok(WriterOk::Recorded)
         }
     }
 }

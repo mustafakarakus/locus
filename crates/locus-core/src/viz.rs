@@ -120,11 +120,18 @@ pub fn graph_payload_json(data: &GraphData) -> Result<String> {
 }
 
 /// A complete, offline-capable HTML page with the graph data embedded.
+///
+/// `__RENDERER__` is substituted before `__GRAPH_DATA__`: the renderer is
+/// trusted code that never contains the placeholder, and the user-controlled
+/// JSON payload is spliced in last so its contents are never re-scanned for
+/// placeholders. (The reverse order would let a memory whose title/content
+/// contains the literal `__RENDERER__` inject the renderer source into the
+/// JSON string.)
 pub fn snapshot_html(data: &GraphData) -> Result<String> {
     let json = graph_payload_json(data)?;
     Ok(SNAPSHOT_TEMPLATE
-        .replace("__GRAPH_DATA__", &json)
-        .replace("__RENDERER__", RENDERER_JS))
+        .replace("__RENDERER__", RENDERER_JS)
+        .replace("__GRAPH_DATA__", &json))
 }
 
 /// The live page: fetches `/data` for the initial graph and subscribes to the
@@ -355,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_escapes_script_breaking_characters() {
+    fn rendered_payload_escapes_script_breaking_characters() {
         let mut data = sample();
         data.nodes[0].title = "</script><script>alert(1)</script>".to_string();
         let json = graph_payload_json(&data).unwrap();
@@ -364,6 +371,30 @@ mod tests {
             "a hostile title must not terminate the script element"
         );
         assert!(json.contains("\\u003c"));
+    }
+
+    #[test]
+    fn memory_containing_renderer_placeholder_is_not_injected() {
+        // A memory whose title/content contains the literal `__RENDERER__` must
+        // be spliced in verbatim. Substituting the renderer first and the
+        // payload last guarantees user data is never re-scanned for
+        // placeholders, so the raw renderer JS cannot end up inside the JSON.
+        let mut data = sample();
+        data.nodes[0].title = "__RENDERER__".to_string();
+        data.nodes[0].content = "note __RENDERER__ payload".to_string();
+        let html = snapshot_html(&data).unwrap();
+
+        // The payload must contain the literal placeholder unchanged, and only
+        // the two occurrences present in the user data (title + content).
+        assert_eq!(
+            html.matches("__RENDERER__").count(),
+            2,
+            "user content holding the placeholder must survive verbatim"
+        );
+        assert!(
+            html.contains("createElementNS"),
+            "renderer JS must be present"
+        );
     }
 
     #[test]
