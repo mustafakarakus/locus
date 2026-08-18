@@ -65,7 +65,7 @@ binaries link only against the OS standard libraries. One way to install:
 Via Cargo (installs `locus` and the `locusd` daemon so auto-start works):
 
 ```bash
-cargo install --git https://github.com/mustafakarakus/locus --package locus-cli --bin locus --locked
+cargo install --git https://github.com/mustafakarakus/locus --package locus-memory-cli --bin locus --locked
 cargo install --git https://github.com/mustafakarakus/locus --package locusd --bin locusd --locked
 cargo install --git https://github.com/mustafakarakus/locus --package locus-mcp --bin locus-mcp --locked
 cargo install --git https://github.com/mustafakarakus/locus --package locus-viz --bin locus-viz --locked
@@ -76,6 +76,9 @@ Via Homebrew (once the first tagged release is published; see `Formula/locus.rb`
 ```bash
 brew install locus
 ```
+
+Maintainers can find the complete publication checklist in
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
 Shell completions for bash, zsh, and fish:
 

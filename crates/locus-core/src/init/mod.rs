@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn detect_existing_rule_and_mcp_files_only() {
+    fn detect_existing_files_and_add_claude_lifecycle_settings() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         write(root, "CLAUDE.md", "hello\n");
@@ -678,7 +678,10 @@ mod tests {
         let rule_labels: Vec<_> = plan.rule_changes.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(rule_labels, vec!["CLAUDE.md"]);
         let mcp_labels: Vec<_> = plan.mcp_changes.iter().map(|c| c.label.as_str()).collect();
-        assert_eq!(mcp_labels, vec![".cursor/mcp.json"]);
+        assert_eq!(
+            mcp_labels,
+            vec![".cursor/mcp.json", ".claude/settings.json"]
+        );
     }
 
     #[test]

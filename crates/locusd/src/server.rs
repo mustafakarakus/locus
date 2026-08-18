@@ -159,6 +159,11 @@ impl Shared {
     pub fn status_snapshot(&self) -> StatusResponse {
         let memory_count = self.store.memory_count().unwrap_or(0);
         let fts_row_count = self.store.fts_row_count().unwrap_or(0);
+        let fts_consistent = self
+            .store
+            .fts_out_of_sync()
+            .map(|value| !value)
+            .unwrap_or(false);
         StatusResponse {
             version: locus_core::VERSION.to_string(),
             protocol: locus_core::ipc::protocol::PROTOCOL_VERSION,
@@ -175,7 +180,7 @@ impl Shared {
             },
             memory_count,
             fts_row_count,
-            fts_consistent: memory_count == fts_row_count,
+            fts_consistent,
             last_error: self.last_error(),
         }
     }
@@ -328,14 +333,14 @@ pub fn serve(shared: Arc<Shared>, listener: LocalSocketListener) {
     shared.log.info("shutting down; draining active requests");
     shared.wait_for_drain(DRAIN_TIMEOUT);
 
-    // Send timeouts on every connection guarantee each handler unblocks on its
-    // own, but timebox the joins anyway so a pathological handler can never
-    // pin shutdown forever.
-    let deadline = Instant::now() + DRAIN_TIMEOUT;
+    // `wait_for_drain` already gives active requests their bounded grace
+    // period. Join only handlers known to have finished: Rust's `join()` has no
+    // timeout, so joining an unfinished pathological handler would defeat the
+    // shutdown deadline. Dropping its handle detaches it; process exit then
+    // terminates the blocked thread.
     for handle in handlers {
-        let _ = handle.join();
-        if Instant::now() >= deadline {
-            break;
+        if handle.is_finished() {
+            let _ = handle.join();
         }
     }
     if let Some(monitor) = monitor {
