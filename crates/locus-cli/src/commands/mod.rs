@@ -1,4 +1,5 @@
 pub mod bench;
+pub mod completions;
 pub mod conflicts;
 pub mod context;
 pub mod daemon;

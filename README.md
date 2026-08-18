@@ -40,6 +40,76 @@ One honest caveat: today, the agent-side automation above works because `locus i
 
 ---
 
+## Installation
+
+Locus ships as native binaries with **no runtime dependencies** — the release
+binaries link only against the OS standard libraries. One way to install:
+
+```bash
+# From a source checkout
+./scripts/install.sh                 # builds release + installs to ~/.local/bin
+# or copy a prebuilt build without compiling
+./scripts/install.sh --from target/release --bin-dir ~/.local/bin
+# remove it later (data untouched)
+./scripts/uninstall.sh
+```
+
+Via Cargo (installs `locus` and the `locusd` daemon so auto-start works):
+
+```bash
+cargo install --git https://github.com/mustafakarakus/locus --package locus-cli --bin locus --locked
+cargo install --git https://github.com/mustafakarakus/locus --package locusd --bin locusd --locked
+cargo install --git https://github.com/mustafakarakus/locus --package locus-mcp --bin locus-mcp --locked
+cargo install --git https://github.com/mustafakarakus/locus --package locus-viz --bin locus-viz --locked
+```
+
+Via Homebrew (once the first tagged release is published; see `Formula/locus.rb`):
+
+```bash
+brew install locus
+```
+
+Shell completions for bash, zsh, and fish:
+
+```bash
+locus completions bash   # > ~/.bash_completion.d/locus.bash
+locus completions zsh    # > /usr/local/share/zsh/site-functions/_locus
+locus completions fish   # > ~/.config/fish/completions/locus.fish
+```
+
+After installing, verify with `locus doctor`, then run `locus init` in a project
+to install the agent rules and MCP config.
+
+### Upgrade path
+
+- **Script install**: re-run `./scripts/install.sh` — it overwrites the
+  binaries in place. Your data in `~/.locus` is never touched.
+- **Cargo install**: repeat the four commands above with `--force`, or use the
+  corresponding `cargo install --upgrade` equivalents when available.
+- **Homebrew**: `brew upgrade locus`.
+- **Data**: Locus keeps the on-disk format versioned in the `migrations` table;
+  `locusd` runs any pending migrations automatically on first start. You never
+  need to migrate by hand, and the old version keeps working until you upgrade
+  the binary.
+
+### Database backup path
+
+Your entire memory is a single SQLite file: `~/.locus/locus.db` (or
+`$LOCUS_HOME/locus.db` when set). To back up:
+
+```bash
+# Stop the daemon so the file is quiescent (it idles out on its own anyway)
+locus daemon stop 2>/dev/null || true
+cp ~/.locus/locus.db ~/.locus/locus.db.backup-$(date +%F)
+locus doctor
+```
+
+Restore by placing the backup back at `~/.locus/locus.db` and running
+`locus doctor` to verify. The FTS5 search index lives in the same file, so a
+single-file copy is a complete, consistent backup.
+
+---
+
 ## Core Idea
 
 Instead of pasting README files, decision docs, or old conversations into every AI session, the agent asks Locus only when needed.
@@ -132,6 +202,7 @@ locus remember "Use Postgres for auth service" --type decision --namespace proje
 locus search "auth database"
 locus context "auth database"
 locus forget <memory-id>
+locus forget --all --yes              # irreversibly wipe all memories; keep Locus initialized
 locus status
 locus doctor
 locus reindex

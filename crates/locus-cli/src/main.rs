@@ -11,9 +11,10 @@ mod commands;
 mod tests;
 
 use commands::{
-    bench::BenchCmd, conflicts::ConflictsCmd, context::ContextCmd, daemon::DaemonCmd,
-    doctor::DoctorCmd, forget::ForgetCmd, graph::GraphCmd, hook::HookCmd, init::InitCmd,
-    mcp::McpCmd, reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd, status::StatusCmd,
+    bench::BenchCmd, completions::CompletionsCmd, conflicts::ConflictsCmd, context::ContextCmd,
+    daemon::DaemonCmd, doctor::DoctorCmd, forget::ForgetCmd, graph::GraphCmd, hook::HookCmd,
+    init::InitCmd, mcp::McpCmd, reindex::ReindexCmd, remember::RememberCmd, search::SearchCmd,
+    status::StatusCmd,
 };
 
 /// Locus — local-first, long-term memory for AI coding agents
@@ -44,7 +45,7 @@ enum Commands {
     /// Get a compressed context brief
     Context(ContextCmd),
 
-    /// Delete a memory by ID
+    /// Delete one memory or wipe all memories
     Forget(ForgetCmd),
 
     /// Manage git hook based memory ingestion
@@ -73,6 +74,9 @@ enum Commands {
 
     /// Run performance benchmarks and check the budget (U-012)
     Bench(BenchCmd),
+
+    /// Generate shell completion scripts (U-014)
+    Completions(CompletionsCmd),
 }
 
 fn main() -> Result<()> {
@@ -100,5 +104,6 @@ fn main() -> Result<()> {
         Commands::Conflicts(cmd) => cmd.run(),
         Commands::Graph(cmd) => cmd.run(),
         Commands::Bench(cmd) => cmd.run(),
+        Commands::Completions(cmd) => cmd.run(),
     }
 }

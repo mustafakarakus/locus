@@ -116,14 +116,24 @@ fn run(config: Config) -> Result<()> {
 
     write_pid_file(&paths)?;
 
-    let (shared, _writer_join) = server::Shared::new(store, paths.clone(), config, log);
+    let (shared, writer_join) = server::Shared::new(store, paths.clone(), config, log);
 
     install_signal_handler(Arc::clone(&shared));
 
     server::serve(Arc::clone(&shared), listener);
+    shared.log().info("locusd stopped");
+
+    // Drain the writer thread so queued writes (access tracking, reindex,
+    // capture) land before the process exits. The shutdown marker is queued
+    // after every other op already in flight; the writer finishes them all and
+    // then exits. We cannot rely on dropping `shared` to close the channel:
+    // the signal-handler closure keeps an Arc alive until process exit.
+    shared.writer().submit_async(writer::WriterOp::Shutdown);
+    if let Some(join) = writer_join {
+        let _ = join.join();
+    }
 
     cleanup(&paths);
-    shared.log().info("locusd stopped");
     Ok(())
 }
 

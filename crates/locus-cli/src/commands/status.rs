@@ -12,23 +12,41 @@ pub struct StatusCmd {
 
 impl StatusCmd {
     pub fn run(self) -> Result<()> {
-        // Try to open the store
-        let _store = Store::open_default()?;
+        let store = Store::open_default()?;
 
-        // TODO: Get memory count and other stats
-        // For now, just show basic status
-        let status = "ok";
+        let database = "ok";
+        let memory_count = store.memory_count().unwrap_or(0);
+        let fts_row_count = store.fts_row_count().unwrap_or(0);
+        let index_ok = if store.fts_out_of_sync().unwrap_or(true) {
+            "out-of-sync"
+        } else {
+            "ok"
+        };
+        let status = if database == "ok" && index_ok == "ok" {
+            "ok"
+        } else {
+            "degraded"
+        };
         let version = locus_core::VERSION;
 
         if self.json {
             println!(
-                "{{\"status\":\"{}\",\"version\":\"{}\",\"database\":\"ok\"}}",
-                status, version
+                "{}",
+                serde_json::json!({
+                    "status": status,
+                    "version": version,
+                    "database": database,
+                    "memory_count": memory_count,
+                    "fts_row_count": fts_row_count,
+                    "search_index": index_ok,
+                })
             );
         } else {
             println!("Locus Status");
             println!("  Version: {}", version);
-            println!("  Database: ok");
+            println!("  Database: {}", database);
+            println!("  Memories: {}", memory_count);
+            println!("  Search index rows: {} ({})", fts_row_count, index_ok);
             println!("  Status: {}", status);
         }
 

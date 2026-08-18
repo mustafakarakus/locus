@@ -83,10 +83,12 @@ impl RememberCmd {
         let (id, warnings) = store.insert_memory_checked(new_memory, self.allow_secret)?;
 
         if self.json {
-            println!(
-                "{{\"status\":\"ok\",\"id\":\"{}\",\"title\":\"{}\"}}",
-                id, title
-            );
+            let response = serde_json::json!({
+                "status": "ok",
+                "id": id,
+                "title": title,
+            });
+            println!("{}", response);
         } else {
             println!("✓ Remembered: {}", title);
             println!("  ID: {}", id);
