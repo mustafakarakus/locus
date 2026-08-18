@@ -13,6 +13,12 @@ fn locus() -> Command {
 fn yes_flag_works_non_interactively() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
+    assert!(Command::new("git")
+        .arg("init")
+        .arg(root)
+        .status()
+        .unwrap()
+        .success());
 
     let output = locus()
         .args(["init", "--yes", "--path"])
@@ -36,6 +42,9 @@ fn yes_flag_works_non_interactively() {
     assert!(root.join(".clinerules").is_file());
     assert!(root.join(".mcp.json").is_file());
     assert!(root.join(".cursor/mcp.json").is_file());
+    assert!(root.join(".vscode/mcp.json").is_file());
+    let hook = fs::read_to_string(root.join(".git/hooks/post-commit")).unwrap();
+    assert!(hook.contains("LOCUS:POST_COMMIT:START"));
 
     let claude = fs::read_to_string(root.join("CLAUDE.md")).unwrap();
     assert!(claude.contains("LOCUS:MEMORY_PROTOCOL:START"));

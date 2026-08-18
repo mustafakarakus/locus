@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "locus": {
+      "args": [
+        "mcp"
+      ],
+      "command": "locus"
+    }
+  }
+}

@@ -28,9 +28,7 @@ It works across:
 
 ## Automatic by Default
 
-The source installer automatically initializes the Git project it is run from.
-`locus init` remains available as an idempotent repair/setup command for projects
-cloned later or installations performed by a package manager.
+Run `locus init` once in a project. After that, you don't touch it again unless you want to.
 
 - **Every commit updates memory on its own.** A lightweight git hook captures what changed — no agent involved, no prompt required, nothing that can be skipped or forgotten.
 - **Every agent session checks memory on its own.** `locus init` writes a short protocol into the rule files your tools already read (`CLAUDE.md`, `.cursorrules`, `.clinerules`), so the agent knows to check Locus before non-trivial changes and save new decisions back — without you repeating yourself every session.
@@ -38,13 +36,7 @@ cloned later or installations performed by a package manager.
 
 The CLI is there for when you *do* want to look under the hood — `locus search`, `locus context`, `locus forget` — but nothing above requires opening a terminal. One setup command, then it's out of your way.
 
-One honest caveat: a package manager such as Homebrew or Cargo installs binaries
-globally and is not told which project should be modified. It therefore cannot
-safely inject per-project rules, MCP files, or Git hooks into an arbitrary
-repository. The source installer can configure its invocation project; projects
-cloned later are initialized once with `locus init`. Agent-side saving still
-depends on the host following the injected protocol unless that host exposes a
-native lifecycle hook.
+One honest caveat: today, the agent-side automation above works because `locus init` writes a "check memory first" instruction into the rule files your agent already reads — it's automatic in the sense that you never repeat yourself, but it still relies on the agent following that instruction. A stronger, platform-guaranteed version — injecting memory before the agent starts reasoning, via each tool's native lifecycle hooks, independent of whether it decides to call a tool — is in progress. See [Roadmap](#roadmap).
 
 ---
 
@@ -453,28 +445,3 @@ These are not part of the first final release:
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
-
-<!-- LOCUS:MEMORY_PROTOCOL:DOC:START -->
-# Locus Memory Protocol
-
-Locus is this project's long-term memory layer for AI coding agents.
-
-## Before non-trivial changes
-
-Consult Locus memory for project decisions, constraints, and preferences:
-
-- **CLI**: run `locus context "<task>"` (returns a compressed Markdown brief or `NO_RELEVANT_MEMORY`)
-- **MCP**: call `memory_search` with a short query about the area you are changing
-
-## Recording decisions
-
-If a new decision is confirmed, record it:
-
-- **CLI**: `locus remember "<decision>" --type decision --namespace project:locus`
-- **MCP**: `memory_save`
-
-## Rules
-
-- **Do not store secrets** — never save API keys, passwords, tokens, private credentials, or `.env` values in Locus.
-- If `NO_RELEVANT_MEMORY` is returned, continue normally.
-<!-- LOCUS:MEMORY_PROTOCOL:DOC:END -->
