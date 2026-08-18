@@ -24,6 +24,9 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_IDLE_TICK: Duration = Duration::from_millis(50);
 /// Per-connection read timeout so idle/stuck peers don't pin a handler thread.
 pub const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Per-connection write timeout: a peer that stops reading must not pin the
+/// handler (and therefore the shutdown `join()`) forever.
+const CONNECTION_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct Life {
     last_activity: Instant,
@@ -53,7 +56,7 @@ impl Shared {
         paths: Paths,
         config: Config,
         log: DaemonLog,
-    ) -> (Arc<Self>, JoinHandle<()>) {
+    ) -> (Arc<Self>, Option<JoinHandle<()>>) {
         let events = EventBus::default();
         let (writer, writer_join) = writer::spawn(store.clone(), events.clone());
         let shared = Arc::new(Self {
@@ -268,10 +271,20 @@ fn create_listener(endpoint: &Endpoint) -> io::Result<LocalSocketListener> {
 pub fn serve(shared: Arc<Shared>, listener: LocalSocketListener) {
     let monitor = {
         let monitor_shared = Arc::clone(&shared);
-        std::thread::Builder::new()
+        match std::thread::Builder::new()
             .name("locusd-idle".to_string())
             .spawn(move || monitor_shared.idle_monitor())
-            .expect("failed to spawn idle monitor")
+        {
+            Ok(handle) => Some(handle),
+            // A failed spawn must not abort the daemon (release = abort); the
+            // daemon simply loses idle-timeout self-exit.
+            Err(err) => {
+                shared
+                    .log
+                    .warn(&format!("could not spawn idle monitor: {err}"));
+                None
+            }
+        }
     };
 
     let mut handlers: Vec<JoinHandle<()>> = Vec::new();
@@ -293,20 +306,39 @@ pub fn serve(shared: Arc<Shared>, listener: LocalSocketListener) {
         }
 
         let _ = stream.set_recv_timeout(Some(CONNECTION_READ_TIMEOUT));
+        let _ = stream.set_send_timeout(Some(CONNECTION_SEND_TIMEOUT));
         let handler_shared = Arc::clone(&shared);
-        let handle = std::thread::Builder::new()
+        match std::thread::Builder::new()
             .name("locusd-conn".to_string())
             .spawn(move || handler::handle_connection(&handler_shared, stream))
-            .expect("failed to spawn connection handler");
-        handlers.push(handle);
+        {
+            Ok(handle) => handlers.push(handle),
+            // A failed spawn must not abort the daemon; the connection is
+            // simply dropped.
+            Err(err) => {
+                shared
+                    .log
+                    .warn(&format!("could not spawn connection handler: {err}"));
+            }
+        }
 
         handlers.retain(|handle| !handle.is_finished());
     }
 
     shared.log.info("shutting down; draining active requests");
     shared.wait_for_drain(DRAIN_TIMEOUT);
+
+    // Send timeouts on every connection guarantee each handler unblocks on its
+    // own, but timebox the joins anyway so a pathological handler can never
+    // pin shutdown forever.
+    let deadline = Instant::now() + DRAIN_TIMEOUT;
     for handle in handlers {
         let _ = handle.join();
+        if Instant::now() >= deadline {
+            break;
+        }
     }
-    let _ = monitor.join();
+    if let Some(monitor) = monitor {
+        let _ = monitor.join();
+    }
 }

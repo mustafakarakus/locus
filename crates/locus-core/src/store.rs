@@ -151,6 +151,20 @@ INSERT OR IGNORE INTO memory_fts_rowid (memory_id, fts_rowid)
 SELECT memory_id, rowid FROM memory_fts;
 ",
     ),
+    (
+        6,
+        "repair_fts_rowid_mapping",
+        "
+-- Older reindex implementations rebuilt memory_fts without rebuilding this
+-- mapping. Repair existing installations once during upgrade; canonical
+-- memories and indexed content are left untouched.
+DELETE FROM memory_fts_rowid;
+INSERT INTO memory_fts_rowid (memory_id, fts_rowid)
+SELECT f.memory_id, f.rowid
+FROM memory_fts f
+INNER JOIN memories m ON m.id = f.memory_id;
+",
+    ),
 ];
 
 /// SQLite-backed storage for canonical memories.
@@ -343,6 +357,25 @@ impl Store {
 
         tx.commit()?;
         Ok(())
+    }
+
+    /// Deletes every stored memory and its derived data, preserving the
+    /// database schema and migrations so Locus can immediately start fresh.
+    pub fn delete_all_memories(&self) -> Result<usize> {
+        let mut conn = self.connect_rw()?;
+        let tx = conn.transaction()?;
+
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
+        tx.execute("DELETE FROM memory_fts", [])?;
+        tx.execute("DELETE FROM memory_fts_rowid", [])?;
+        tx.execute("DELETE FROM memories", [])?;
+        // `memory_entities` and `memory_conflicts` are removed by foreign-key
+        // cascades. Entity rows are shared lookup data but become unreferenced
+        // after a full wipe, so remove them as well.
+        tx.execute("DELETE FROM entities", [])?;
+        tx.commit()?;
+
+        Ok(usize::try_from(count).unwrap_or(0))
     }
 
     /// Searches memories using the default FTS5 backend and shared reranking.
@@ -543,13 +576,34 @@ impl Store {
         Ok(usize::try_from(count).unwrap_or(0))
     }
 
-    /// Reports whether the FTS5 index has drifted from the canonical rows.
-    ///
-    /// This is a cheap consistency check (comparing row counts) used on daemon
-    /// startup to decide whether a `reindex` is warranted. It never mutates
-    /// data.
+    /// Reports whether the FTS5 index or its rowid mapping has drifted from the
+    /// canonical rows. It never mutates data.
     pub fn fts_out_of_sync(&self) -> Result<bool> {
-        Ok(self.memory_count()? != self.fts_row_count()?)
+        let conn = self.connect_ro()?;
+        let inconsistent: bool = conn.query_row(
+            "
+            SELECT EXISTS (
+                SELECT 1
+                FROM memories m
+                LEFT JOIN memory_fts_rowid r ON r.memory_id = m.id
+                LEFT JOIN memory_fts f ON f.rowid = r.fts_rowid
+                WHERE f.memory_id IS NULL OR f.memory_id <> m.id
+
+                UNION ALL
+
+                SELECT 1
+                FROM memory_fts f
+                LEFT JOIN memories m ON m.id = f.memory_id
+                LEFT JOIN memory_fts_rowid r ON r.memory_id = f.memory_id
+                WHERE m.id IS NULL
+                   OR r.fts_rowid IS NULL
+                   OR r.fts_rowid <> f.rowid
+            )
+            ",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(inconsistent)
     }
 
     /// Rebuilds the FTS5 search table from the canonical memory rows.
@@ -562,6 +616,7 @@ impl Store {
         let mut conn = self.connect_rw()?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM memory_fts", [])?;
+        tx.execute("DELETE FROM memory_fts_rowid", [])?;
         tx.execute(
             "
             INSERT INTO memory_fts (memory_id, title, content, entities)
@@ -576,6 +631,17 @@ impl Store {
                     WHERE me.memory_id = m.id
                 ), '')
             FROM memories m
+            ",
+            [],
+        )?;
+        // FTS5 rowids are reassigned on re-insert, so rebuild the rowid mapping
+        // that the delete/update paths use to target FTS rows by rowid. Without
+        // this, the mapping points at stale rowids and a later delete/update
+        // would remove the wrong memory's FTS row.
+        tx.execute(
+            "
+            INSERT OR IGNORE INTO memory_fts_rowid (memory_id, fts_rowid)
+            SELECT memory_id, rowid FROM memory_fts
             ",
             [],
         )?;
@@ -628,11 +694,7 @@ impl Store {
         let conn = self.connect_rw()?;
 
         for (other_id, other_title) in candidates {
-            let shared_words: Vec<String> = words
-                .iter()
-                .filter(|w| conflict::significant_words(&other_title).contains(w))
-                .cloned()
-                .collect();
+            let shared_words: Vec<String> = conflict::shared_word_list(&memory.title, &other_title);
 
             if shared_words.len() < conflict::MIN_SHARED_WORDS {
                 continue;
@@ -1142,6 +1204,185 @@ mod tests {
             .get_memory_by_id(&id)
             .expect_err("memory should be gone after delete");
         assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn delete_all_memories_clears_data_and_store_remains_reusable() {
+        let (store, _tmp, db_path) = test_store();
+        store
+            .insert_memory(sample_new_memory(Some("project:auth"), MemoryType::Task))
+            .expect("first insert");
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:other".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Use SQLite storage".to_string(),
+                content: "Keep canonical memory in SQLite".to_string(),
+                entities: vec!["sqlite".to_string()],
+                importance: 80,
+                source: None,
+            })
+            .expect("second insert");
+
+        assert_eq!(store.delete_all_memories().expect("wipe"), 2);
+        assert_eq!(store.memory_count().unwrap(), 0);
+        assert_eq!(store.fts_row_count().unwrap(), 0);
+        assert!(!store.fts_out_of_sync().unwrap());
+
+        let conn = Connection::open(&db_path).expect("open db");
+        for table in [
+            "entities",
+            "memory_entities",
+            "memory_conflicts",
+            "memory_fts_rowid",
+        ] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("count derived rows");
+            assert_eq!(count, 0, "{table} must be empty after wipe");
+        }
+
+        let new_id = store
+            .insert_memory(sample_new_memory(None, MemoryType::Fact))
+            .expect("store remains reusable");
+        assert!(store.get_memory_by_id(&new_id).is_ok());
+        assert_eq!(store.memory_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn reindex_rebuilds_fts_rowid_mapping() {
+        let (store, _tmp, db_path) = test_store();
+
+        let insert = |title: &str, content: &str| {
+            store
+                .insert_memory(NewMemory {
+                    namespace: Some("global".to_string()),
+                    memory_type: MemoryType::Fact,
+                    title: title.to_string(),
+                    content: content.to_string(),
+                    entities: vec![],
+                    importance: 50,
+                    source: None,
+                })
+                .expect("insert")
+        };
+        let a = insert(
+            "Rust borrow checker",
+            "The borrow checker enforces memory safety",
+        );
+        let b = insert("Locus design", "Locus uses FTS5 for search");
+        let c = insert("SQLite indexes", "FTS5 prefix indexes are fast");
+
+        // Delete the earliest memory. This frees FTS rowid 1, so the remaining
+        // memories shift into lower rowid slots on the next reindex, making the
+        // old rowid mapping point at different memories than before.
+        store.delete_memory(&a).expect("delete a");
+
+        // Reindexing clears and repopulates memory_fts, which reassigns FTS5
+        // rowids. The memory_fts_rowid mapping must be rebuilt too, otherwise a
+        // later delete targets a stale rowid and removes the wrong memory's FTS
+        // row (here: deleting b would erase c's index entry).
+        let count = store.reindex().expect("reindex should work");
+        assert_eq!(count, 2);
+
+        let conn = Connection::open(&db_path).expect("open db");
+        let mapped: Vec<(String, i64)> = conn
+            .prepare("SELECT memory_id, fts_rowid FROM memory_fts_rowid")
+            .expect("prepare mapping")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query mapping")
+            .collect::<std::result::Result<_, _>>()
+            .expect("collect mapping");
+        assert_eq!(mapped.len(), 2, "mapping must cover every memory");
+
+        let actual: Vec<(String, i64)> = conn
+            .prepare("SELECT memory_id, rowid FROM memory_fts")
+            .expect("prepare fts")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query fts")
+            .collect::<std::result::Result<_, _>>()
+            .expect("collect fts");
+        for (memory_id, fts_rowid) in actual {
+            let mapped_rowid = mapped
+                .iter()
+                .find(|(id, _)| id == &memory_id)
+                .expect("memory must be mapped")
+                .1;
+            assert_eq!(
+                mapped_rowid, fts_rowid,
+                "stale memory_fts_rowid for {memory_id} after reindex"
+            );
+        }
+
+        // Deleting b must not remove c's FTS row.
+        store.delete_memory(&b).expect("delete b");
+        let hits = store
+            .search(crate::search::Query::new("borrow checker"))
+            .expect("search should work");
+        assert!(hits.is_empty(), "a must be gone from the index");
+
+        let hits = store
+            .search(crate::search::Query::new("prefix indexes"))
+            .expect("search should work");
+        assert!(
+            hits.iter().any(|h| h.id == c),
+            "c must still be searchable after deleting b"
+        );
+    }
+
+    #[test]
+    fn consistency_check_detects_stale_mapping_with_equal_row_counts() {
+        let (store, _tmp, db_path) = test_store();
+        let insert = |title: &str| {
+            store
+                .insert_memory(NewMemory {
+                    namespace: Some("global".to_string()),
+                    memory_type: MemoryType::Fact,
+                    title: title.to_string(),
+                    content: format!("content for {title}"),
+                    entities: vec![],
+                    importance: 50,
+                    source: None,
+                })
+                .expect("insert")
+        };
+        let first = insert("First mapping");
+        let second = insert("Second mapping");
+
+        let conn = Connection::open(&db_path).expect("open db");
+        let first_rowid: i64 = conn
+            .query_row(
+                "SELECT fts_rowid FROM memory_fts_rowid WHERE memory_id = ?",
+                params![first],
+                |row| row.get(0),
+            )
+            .expect("first rowid");
+        let second_rowid: i64 = conn
+            .query_row(
+                "SELECT fts_rowid FROM memory_fts_rowid WHERE memory_id = ?",
+                params![second],
+                |row| row.get(0),
+            )
+            .expect("second rowid");
+        conn.execute(
+            "UPDATE memory_fts_rowid SET fts_rowid = CASE memory_id WHEN ? THEN ? WHEN ? THEN ? END WHERE memory_id IN (?, ?)",
+            params![first, second_rowid, second, first_rowid, first, second],
+        )
+        .expect("swap mappings");
+
+        assert_eq!(
+            store.memory_count().unwrap(),
+            store.fts_row_count().unwrap()
+        );
+        assert!(
+            store.fts_out_of_sync().expect("consistency check"),
+            "identity drift must be detected even when row counts match"
+        );
+
+        store.reindex().expect("repair");
+        assert!(!store.fts_out_of_sync().expect("repaired consistency"));
     }
 
     #[test]

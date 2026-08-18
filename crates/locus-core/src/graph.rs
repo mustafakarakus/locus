@@ -167,12 +167,21 @@ impl Store {
         namespace: Option<&str>,
         max_nodes: usize,
     ) -> Result<Vec<String>> {
-        // Confirm the focus memory exists.
-        let focus_exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM memories WHERE id = ?)",
-            params![focus_id],
-            |row| row.get(0),
-        )?;
+        // Confirm the focus memory exists — and, when a namespace filter is
+        // given, that it actually lives in that namespace. Otherwise the focus
+        // node would leak into a graph that is supposed to be namespace-scoped.
+        let focus_exists: bool = match namespace {
+            Some(ns) => conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memories WHERE id = ? AND namespace = ?)",
+                params![focus_id, ns],
+                |row| row.get(0),
+            )?,
+            None => conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memories WHERE id = ?)",
+                params![focus_id],
+                |row| row.get(0),
+            )?,
+        };
         if !focus_exists {
             return Err(crate::Error::NotFound(format!(
                 "memory not found: {focus_id}"
@@ -487,6 +496,29 @@ mod tests {
                 ..GraphRequest::default()
             })
             .expect_err("unknown id should error");
+        assert!(matches!(err, crate::Error::NotFound(_)));
+    }
+
+    #[test]
+    fn graph_expand_with_namespace_does_not_leak_focus_from_other_namespace() {
+        let (store, _tmp) = test_store();
+        let foreign = store
+            .insert_memory(memory("project:payments", "Stripe focus", &["stripe"]))
+            .unwrap();
+        store
+            .insert_memory(memory("project:auth", "Postgres linked", &["postgres"]))
+            .unwrap();
+
+        // Expanding a focus memory that lives outside the requested namespace
+        // must not surface it in the namespace-scoped graph: it errors instead
+        // of leaking an out-of-namespace node into the graph.
+        let err = store
+            .graph(GraphRequest {
+                namespace: Some("project:auth".to_string()),
+                expand: Some(foreign.clone()),
+                ..GraphRequest::default()
+            })
+            .expect_err("focus outside namespace must not leak");
         assert!(matches!(err, crate::Error::NotFound(_)));
     }
 

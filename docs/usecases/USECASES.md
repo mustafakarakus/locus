@@ -1627,7 +1627,7 @@ Agent A                        Agent B
 
 ## U-014: Packaging and Release
 
-Status: Backlog  
+Status: In Progress
 Priority: P1  
 Depends On: U-012, U-013  
 Blocks: None
@@ -1642,31 +1642,31 @@ Package Locus as a native binary.
 
 ### Scope
 
-- [ ] Build release binaries.
-- [ ] Add shell completions.
-- [ ] Add install script.
-- [ ] Add uninstall script.
-- [ ] Add Homebrew formula.
-- [ ] Add Cargo install support.
-- [ ] Add `locus doctor`.
-- [ ] Document upgrade path.
-- [ ] Document database backup path.
-- [ ] Ensure no runtime dependencies are required.
+- [x] Build release binaries.
+- [x] Add shell completions.
+- [x] Add install script.
+- [x] Add uninstall script.
+- [x] Add Homebrew formula.
+- [x] Add Cargo install support.
+- [x] Add `locus doctor`.
+- [x] Document upgrade path.
+- [x] Document database backup path.
+- [x] Ensure no runtime dependencies are required.
 
 ### Tests
 
-- [ ] Install script works in temporary directory.
-- [ ] Uninstall script works.
-- [ ] Binary starts.
-- [ ] Shell completions generate.
-- [ ] `locus doctor` passes on clean install.
+- [x] Install script works in temporary directory.
+- [x] Uninstall script works.
+- [x] Binary starts.
+- [x] Shell completions generate.
+- [x] `locus doctor` passes on clean install.
 
 ### Definition of Done
 
-- [ ] All scope items complete.
-- [ ] All tests green.
-- [ ] Release process documented.
-- [ ] Status changed to `Ready for Review`.
+- [x] All scope items complete.
+- [x] All tests green.
+- [x] Release process documented.
+- [ ] Status changed to `Ready for Review` after the full pre-release check.
 - [ ] Human approval received.
 
 ---

@@ -12,17 +12,16 @@ pub struct ReindexCmd {
 
 impl ReindexCmd {
     pub fn run(self) -> Result<()> {
-        // Open the store
-        let _store = Store::open_default()?;
-
-        // TODO: Implement reindex operation
-        // This should rebuild the FTS5 table from canonical data
-        // store.reindex()?;
+        let store = Store::open_default()?;
+        let count = store.reindex()?;
 
         if self.json {
-            println!("{{\"status\":\"ok\",\"message\":\"Search index rebuilt\"}}");
+            println!(
+                "{{\"status\":\"ok\",\"reindexed\":{}}}",
+                serde_json::json!(count)
+            );
         } else {
-            println!("✓ Search index rebuilt successfully");
+            println!("✓ Rebuilt search index: {} memory(ies)", count);
         }
 
         Ok(())

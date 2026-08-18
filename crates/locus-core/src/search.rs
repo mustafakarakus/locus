@@ -199,24 +199,38 @@ impl SearchEngine for Fts5SearchEngine {
             .collect::<Vec<_>>();
         values.push(&limit_i64);
 
-        let mut rows = stmt.query(values.as_slice())?;
-        let mut hits = Vec::new();
+        // FTS5 raises a syntax error (e.g. an unbalanced quote or a bare `*`)
+        // for queries that were passed through verbatim. That must not fail the
+        // whole search — degrade to the LIKE scan instead. This is safe: if the
+        // underlying database were genuinely broken, the LIKE scan would fail
+        // with its own error rather than silently returning results.
+        let fts = (|| -> Result<Vec<Hit>> {
+            let mut rows = stmt.query(values.as_slice())?;
+            let mut hits = Vec::new();
 
-        while let Some(row) = rows.next()? {
-            let raw_rank: f64 = row.get(1)?;
-            let snippet: Option<String> = row.get(2)?;
+            while let Some(row) = rows.next()? {
+                let raw_rank: f64 = row.get(1)?;
+                let snippet: Option<String> = row.get(2)?;
 
-            hits.push(Hit {
-                id: row.get(0)?,
-                // FTS5 bm25 score is lower-is-better; invert to higher-is-better.
-                relevance: (-raw_rank) as f32,
-                snippet: snippet.unwrap_or_default(),
-            });
-        }
+                hits.push(Hit {
+                    id: row.get(0)?,
+                    // FTS5 bm25 score is lower-is-better; invert to higher-is-better.
+                    relevance: (-raw_rank) as f32,
+                    snippet: snippet.unwrap_or_default(),
+                });
+            }
 
-        if hits.is_empty() {
-            return self.search_like_fallback(query);
-        }
+            Ok(hits)
+        })();
+
+        let hits = match fts {
+            Ok(hits) if !hits.is_empty() => hits,
+            Ok(_) => return self.search_like_fallback(query),
+            Err(crate::Error::Sql(rusqlite::Error::SqliteFailure(_, _))) => {
+                return self.search_like_fallback(query);
+            }
+            Err(err) => return Err(err),
+        };
 
         Ok(hits)
     }
@@ -342,7 +356,48 @@ fn normalize_i64(value: i64, min: i64, max: i64) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use crate::store::Store;
+    use tempfile::TempDir;
+
     use super::*;
+
+    fn test_store() -> (Store, TempDir) {
+        let tmp = TempDir::new().expect("temp dir");
+        let store = Store::open_at(tmp.path().join("locus.db")).expect("store should initialize");
+        (store, tmp)
+    }
+
+    #[test]
+    fn fts_syntax_error_falls_back_to_like() {
+        let (store, _tmp) = test_store();
+        store
+            .insert_memory(crate::memory::NewMemory {
+                namespace: Some("global".to_string()),
+                memory_type: MemoryType::Fact,
+                title: "Quoting rules".to_string(),
+                content: "Always quote the tokens he said".to_string(),
+                entities: vec![],
+                importance: 50,
+                source: None,
+            })
+            .expect("insert");
+
+        // An unbalanced quote is a fatal FTS5 syntax error. It must not hard-
+        // fail the search: degrade to the LIKE scan and still return the hit.
+        let engine = Fts5SearchEngine::open_at(store.db_path().to_path_buf());
+        let hits = engine
+            .search(&Query::new("\"unbalanced"))
+            .expect("syntax-error query must not fail");
+        assert!(hits.is_empty(), "no text matches the malformed phrase");
+
+        let hits = engine
+            .search(&Query::new("he said"))
+            .expect("valid query must succeed");
+        assert!(
+            hits.iter().any(|h| h.snippet.contains("quote the tokens")),
+            "LIKE fallback must find the memory"
+        );
+    }
 
     #[test]
     fn reranker_prefers_newer_and_more_important_when_relevance_is_close() {
