@@ -72,13 +72,6 @@ for b in $binaries; do
         missing="$missing $b"
     fi
 done
-
-initialized=""
-if [ "$auto_init" -eq 1 ] && command -v git >/dev/null 2>&1 &&
-   git -C "$invocation_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    "$bin_dir/locus" init --yes --path "$invocation_dir"
-    initialized="$invocation_dir"
-fi
 if [ -n "$missing" ]; then
     echo "install.sh: missing prebuilt binaries in $from_dir:$missing" >&2
     echo "  Build them first (cargo build --release) or point --from at a built dir." >&2
@@ -92,12 +85,18 @@ for b in $binaries; do
     echo "  installed $bin_dir/$b"
 done
 
+initialized=""
+if [ "$auto_init" -eq 1 ] && command -v git >/dev/null 2>&1 &&
+   git -C "$invocation_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    "$bin_dir/locus" init --yes --path "$invocation_dir"
+    initialized="$invocation_dir"
+fi
+
 cat <<EOF
 
 Installed Locus into $bin_dir.
   - Add $bin_dir to your PATH if it is not there already.
   - Memory data lives in ~/.locus (override with LOCUS_HOME).
-  - Run 'locus init' in a project to install agent rules and MCP config.
 EOF
 
 if [ -n "$initialized" ]; then
