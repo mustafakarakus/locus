@@ -136,14 +136,16 @@ impl CaptureAdapter for ClaudeCodeAdapter {
             .and_then(project_namespace);
 
         let text = value
-            .get("summary")
+            .get("compact_summary")
+            .or_else(|| value.get("summary"))
             .or_else(|| value.get("compacted_text"))
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
                 Error::InvalidInput(
-                    "claude-code capture payload missing summary/compacted_text".to_string(),
+                    "claude-code capture payload missing compact_summary/summary/compacted_text"
+                        .to_string(),
                 )
             })?;
 
@@ -431,6 +433,14 @@ mod tests {
         let trigger = ClaudeCodeAdapter.translate(payload).unwrap();
         assert_eq!(trigger.namespace.as_deref(), Some("project:my-app"));
         assert_eq!(trigger.text, "Use sqlite for search");
+    }
+
+    #[test]
+    fn claude_code_adapter_accepts_post_compact_summary() {
+        let payload = r#"{"session_id":"s1","cwd":"/repo/my-app","hook_event_name":"PostCompact","trigger":"auto","compact_summary":"We decided to keep SQLite FTS5 for search."}"#;
+        let trigger = ClaudeCodeAdapter.translate(payload).unwrap();
+        assert_eq!(trigger.namespace.as_deref(), Some("project:my-app"));
+        assert_eq!(trigger.text, "We decided to keep SQLite FTS5 for search.");
     }
 
     #[test]

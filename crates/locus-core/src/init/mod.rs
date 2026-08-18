@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{Error, Result};
 
-use mcp::{detect_mcp_configs, plan_mcp_change, write_mcp_change};
+use mcp::{detect_mcp_configs, plan_claude_hooks_change, plan_mcp_change, write_mcp_change};
 use rules::{plan_rule_change, write_rule_change};
 
 /// High-level project classification used for messaging and namespace hints.
@@ -289,18 +289,24 @@ pub fn plan_init(project_root: &Path) -> Result<InitPlan> {
         .map(|kind| plan_rule_change(&root, kind, &block))
         .collect::<Result<Vec<_>>>()?;
 
-    // MCP configs: patch any that exist; if none, create common project-level ones.
+    // MCP configs: patch any that exist; if none, create the standard
+    // project-level configs for Claude Code, Cursor, and VS Code/Copilot.
     let existing_mcp = detect_mcp_configs(&root);
     let mcp_targets: Vec<McpConfigTarget> = if existing_mcp.is_empty() {
-        vec![McpConfigTarget::McpJson, McpConfigTarget::CursorMcp]
+        vec![
+            McpConfigTarget::McpJson,
+            McpConfigTarget::CursorMcp,
+            McpConfigTarget::VsCodeMcp,
+        ]
     } else {
         existing_mcp
     };
 
-    let mcp_changes = mcp_targets
+    let mut mcp_changes = mcp_targets
         .into_iter()
         .map(|target| plan_mcp_change(&root, target))
         .collect::<Result<Vec<_>>>()?;
+    mcp_changes.push(plan_claude_hooks_change(&root)?);
 
     // Doc files (U-015): passive fallback for agents without a hook system.
     // Only patched when present — never created.
@@ -595,6 +601,38 @@ mod tests {
         let locus = &servers["locus"];
         assert_eq!(locus["command"], "locus");
         assert_eq!(locus["args"], serde_json::json!(["mcp"]));
+    }
+
+    #[test]
+    fn fresh_init_creates_mcp_configs_for_all_supported_hosts() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let plan = plan_init(root).unwrap();
+        apply_plan(&plan).unwrap();
+
+        for relative in [".mcp.json", ".cursor/mcp.json", ".vscode/mcp.json"] {
+            let text = fs::read_to_string(root.join(relative)).expect("MCP config created");
+            let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+            let key = if relative == ".vscode/mcp.json" {
+                "servers"
+            } else {
+                "mcpServers"
+            };
+            assert!(
+                value[key]["locus"].is_object(),
+                "{relative} must configure Locus"
+            );
+        }
+
+        let claude: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join(".claude/settings.json"))
+                .expect("Claude settings created"),
+        )
+        .expect("valid Claude settings");
+        assert!(claude["hooks"]["SessionStart"].is_array());
+        assert!(claude["hooks"]["UserPromptSubmit"].is_array());
+        assert!(claude["hooks"]["PostCompact"].is_array());
     }
 
     #[test]

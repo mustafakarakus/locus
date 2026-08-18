@@ -1209,7 +1209,7 @@ These may be considered later only as explicit separate use cases.
 - [x] VPS/headless behavior documented.
 - [x] No network exposure introduced by default.
 - [x] Status changed to `Ready for Review`.
-- [ ] Human approval received.
+- [x] Human approval received.
 
 ---
 

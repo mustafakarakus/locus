@@ -4,6 +4,7 @@ Cargo.lock.orig
 
 # Local Locus runtime state (never commit user data)
 /.locus/
+*.locus-backup*
 *.db
 *.db-wal
 *.db-shm

@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "locus": {
+      "args": [
+        "mcp"
+      ],
+      "command": "locus",
+      "type": "stdio"
+    }
+  }
+}

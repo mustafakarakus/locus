@@ -128,6 +128,117 @@ pub fn plan_mcp_change(root: &Path, target: McpConfigTarget) -> Result<PlannedCh
     }
 }
 
+/// Plan Claude Code lifecycle hooks for context injection and compaction
+/// capture. Existing settings and hook entries are preserved.
+pub fn plan_claude_hooks_change(root: &Path) -> Result<PlannedChange> {
+    let path = root.join(".claude/settings.json");
+    let existing = if path.is_file() {
+        fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+    let mut value: Value = if existing.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&existing).map_err(|e| {
+            Error::InvalidInput(format!(
+                "Claude settings {} are not valid JSON: {e}",
+                path.display()
+            ))
+        })?
+    };
+    if !value.is_object() {
+        return Err(Error::InvalidInput(
+            "Claude settings root must be a JSON object".into(),
+        ));
+    }
+
+    let desired = [
+        (
+            "SessionStart",
+            json!({
+                "matcher": "startup|resume|clear|compact|fork",
+                "hooks": [{
+                    "type": "command",
+                    "command": "locus",
+                    "args": ["hook", "context", "--host", "claude-code"],
+                    "timeout": 5
+                }]
+            }),
+        ),
+        (
+            "UserPromptSubmit",
+            json!({
+                "hooks": [{
+                    "type": "command",
+                    "command": "locus",
+                    "args": ["hook", "context", "--host", "claude-code"],
+                    "timeout": 5
+                }]
+            }),
+        ),
+        (
+            "PostCompact",
+            json!({
+                "matcher": "manual|auto",
+                "hooks": [{
+                    "type": "command",
+                    "command": "locus",
+                    "args": ["hook", "capture", "--host", "claude-code"],
+                    "async": true,
+                    "timeout": 10
+                }]
+            }),
+        ),
+    ];
+
+    let root_obj = value.as_object_mut().expect("checked object");
+    let hooks = root_obj.entry("hooks").or_insert_with(|| json!({}));
+    let hooks_obj = hooks.as_object_mut().ok_or_else(|| {
+        Error::InvalidInput("Claude settings `hooks` must be a JSON object".into())
+    })?;
+    let mut changed = false;
+    for (event, entry) in desired {
+        let entries = hooks_obj
+            .entry(event.to_string())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "Claude settings hook event `{event}` must be an array"
+                ))
+            })?;
+        if !entries.contains(&entry) {
+            entries.push(entry);
+            changed = true;
+        }
+    }
+
+    if !changed {
+        return Ok(PlannedChange {
+            path,
+            action: ChangeAction::Skip,
+            label: ".claude/settings.json".into(),
+            proposed_content: String::new(),
+            existing_content: existing,
+            summary: "Claude lifecycle hooks already configured — skip".into(),
+        });
+    }
+
+    Ok(PlannedChange {
+        path,
+        action: if existing.is_empty() {
+            ChangeAction::Create
+        } else {
+            ChangeAction::Modify
+        },
+        label: ".claude/settings.json".into(),
+        proposed_content: pretty_json(&value)?,
+        existing_content: existing,
+        summary: "Configure Claude context and compaction hooks".into(),
+    })
+}
+
 /// Write planned MCP content (caller handles backups / parent dirs).
 pub fn write_mcp_change(change: &PlannedChange) -> Result<()> {
     if change.action == ChangeAction::Skip {
@@ -227,5 +338,37 @@ mod tests {
         assert_eq!(change.action, ChangeAction::Create);
         write_mcp_change(&change).unwrap();
         assert!(tmp.path().join(".cursor/mcp.json").is_file());
+    }
+
+    #[test]
+    fn claude_hooks_preserve_existing_settings_and_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".claude/settings.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"permissions":{"allow":["Read"]},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"existing"}]}]}}"#,
+        )
+        .unwrap();
+
+        let change = plan_claude_hooks_change(tmp.path()).unwrap();
+        assert_eq!(change.action, ChangeAction::Modify);
+        write_mcp_change(&change).unwrap();
+
+        let value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["permissions"]["allow"], json!(["Read"]));
+        assert_eq!(value["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
+        assert!(value["hooks"]["PostCompact"][0]["hooks"][0]["async"]
+            .as_bool()
+            .unwrap());
+    }
+
+    #[test]
+    fn claude_hooks_are_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let first = plan_claude_hooks_change(tmp.path()).unwrap();
+        write_mcp_change(&first).unwrap();
+        let second = plan_claude_hooks_change(tmp.path()).unwrap();
+        assert_eq!(second.action, ChangeAction::Skip);
     }
 }

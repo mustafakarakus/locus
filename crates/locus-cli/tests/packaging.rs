@@ -117,6 +117,7 @@ fn install_script_installs_to_temp_prefix() {
         .arg(built_bin_dir())
         .arg("--bin-dir")
         .arg(&bin_dir)
+        .arg("--no-init")
         .output()
         .expect("run install.sh");
     assert!(
@@ -152,6 +153,7 @@ fn uninstall_script_removes_installed_binaries() {
         .arg(built_bin_dir())
         .arg("--bin-dir")
         .arg(&bin_dir)
+        .arg("--no-init")
         .output()
         .expect("run install.sh");
     assert!(install.status.success());

@@ -1,0 +1,58 @@
+{
+  "hooks": {
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "hook",
+              "capture",
+              "--host",
+              "claude-code"
+            ],
+            "async": true,
+            "command": "locus",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "manual|auto"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "hook",
+              "context",
+              "--host",
+              "claude-code"
+            ],
+            "command": "locus",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "startup|resume|clear|compact|fork"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "hook",
+              "context",
+              "--host",
+              "claude-code"
+            ],
+            "command": "locus",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

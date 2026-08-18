@@ -111,7 +111,15 @@ impl HookCmd {
     }
 }
 
-fn install(path: Option<PathBuf>) -> Result<()> {
+pub(crate) fn install(path: Option<PathBuf>) -> Result<()> {
+    install_inner(path, true)
+}
+
+pub(crate) fn install_quiet(path: Option<PathBuf>) -> Result<()> {
+    install_inner(path, false)
+}
+
+fn install_inner(path: Option<PathBuf>, announce: bool) -> Result<()> {
     let repo = resolve_repo(path)?;
     let hook_path = repo.hooks_dir.join("post-commit");
 
@@ -121,7 +129,9 @@ fn install(path: Option<PathBuf>) -> Result<()> {
         let existing = fs::read_to_string(&hook_path)
             .with_context(|| format!("failed reading {}", hook_path.display()))?;
         if existing.contains(START_MARKER) {
-            println!("locus hook already installed at {}", hook_path.display());
+            if announce {
+                println!("locus hook already installed at {}", hook_path.display());
+            }
             return Ok(());
         }
         let mut merged = existing;
@@ -139,7 +149,9 @@ fn install(path: Option<PathBuf>) -> Result<()> {
         write_hook_file(&hook_path, &body)?;
     }
 
-    println!("Installed post-commit hook: {}", hook_path.display());
+    if announce {
+        println!("Installed post-commit hook: {}", hook_path.display());
+    }
     Ok(())
 }
 

@@ -139,3 +139,28 @@ this repo: read [`AGENTS.md`](AGENTS.md) in full before making changes. It is
 not optional context — it defines what you're allowed to do autonomously
 versus what requires human sign-off, and it is kept up to date specifically
 so agents don't have to guess.
+
+<!-- LOCUS:MEMORY_PROTOCOL:DOC:START -->
+# Locus Memory Protocol
+
+Locus is this project's long-term memory layer for AI coding agents.
+
+## Before non-trivial changes
+
+Consult Locus memory for project decisions, constraints, and preferences:
+
+- **CLI**: run `locus context "<task>"` (returns a compressed Markdown brief or `NO_RELEVANT_MEMORY`)
+- **MCP**: call `memory_search` with a short query about the area you are changing
+
+## Recording decisions
+
+If a new decision is confirmed, record it:
+
+- **CLI**: `locus remember "<decision>" --type decision --namespace project:locus`
+- **MCP**: `memory_save`
+
+## Rules
+
+- **Do not store secrets** — never save API keys, passwords, tokens, private credentials, or `.env` values in Locus.
+- If `NO_RELEVANT_MEMORY` is returned, continue normally.
+<!-- LOCUS:MEMORY_PROTOCOL:DOC:END -->

@@ -47,6 +47,12 @@ impl InitCmd {
         }
 
         if plan.is_noop() {
+            // Rule/MCP files may already exist while the local Git hook is
+            // missing (for example after cloning an initialized repository).
+            // Keep `locus init` as the one complete setup operation.
+            if !self.dry_run {
+                install_git_hook_if_repository(&plan.project_root)?;
+            }
             if self.json {
                 print_json_plan(&plan, None)?;
             } else {
@@ -85,6 +91,7 @@ impl InitCmd {
         }
 
         let result = apply_plan(&plan).context("failed to apply init plan")?;
+        install_git_hook_if_repository(&plan.project_root)?;
 
         if self.json {
             print_json_plan(&plan, Some(&result))?;
@@ -114,6 +121,20 @@ impl InitCmd {
 
         Ok(())
     }
+}
+
+fn install_git_hook_if_repository(root: &std::path::Path) -> Result<()> {
+    let is_repository = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if is_repository {
+        crate::commands::hook::install_quiet(Some(root.to_path_buf()))?;
+    }
+    Ok(())
 }
 
 fn stdin_is_tty() -> bool {
