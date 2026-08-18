@@ -1,11 +1,15 @@
 [package]
-name = "locus-core"
+name = "locus-memory-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Core memory model, storage, search, and context brief engine for Locus."
+
+[lib]
+name = "locus_core"
+path = "src/lib.rs"
 
 [dependencies]
 thiserror.workspace = true

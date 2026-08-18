@@ -1627,7 +1627,7 @@ Agent A                        Agent B
 
 ## U-014: Packaging and Release
 
-Status: In Progress
+Status: Done
 Priority: P1  
 Depends On: U-012, U-013  
 Blocks: None
@@ -1666,8 +1666,8 @@ Package Locus as a native binary.
 - [x] All scope items complete.
 - [x] All tests green.
 - [x] Release process documented.
-- [ ] Status changed to `Ready for Review` after the full pre-release check.
-- [ ] Human approval received.
+- [x] Status changed to `Ready for Review` after the full pre-release check.
+- [x] Human approval received.
 
 ---
 

@@ -17,7 +17,7 @@ license = "MIT"
 repository = "https://github.com/mustafakarakus/locus"
 
 [workspace.dependencies]
-locus-core = { version = "0.1.0", path = "crates/locus-core" }
+locus-core = { package = "locus-memory-core", version = "0.1.0", path = "crates/locus-core" }
 locus-mcp = { version = "0.1.0", path = "crates/locus-mcp" }
 locus-testkit = { version = "0.1.0", path = "crates/locus-testkit" }
 
