@@ -71,10 +71,10 @@ cargo install --git https://github.com/mustafakarakus/locus --package locus-mcp 
 cargo install --git https://github.com/mustafakarakus/locus --package locus-viz --bin locus-viz --locked
 ```
 
-Via Homebrew (once the first tagged release is published; see `Formula/locus.rb`):
+Via the Locus Homebrew tap:
 
 ```bash
-brew install locus
+brew install mustafakarakus/tap/locus
 ```
 
 Maintainers can find the complete publication checklist in
