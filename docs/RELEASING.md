@@ -49,13 +49,23 @@ checksum, and replace the formula's all-zero placeholder:
 curl -L -o locus-v0.1.0.tar.gz \
   https://github.com/mustafakarakus/locus/archive/refs/tags/v0.1.0.tar.gz
 shasum -a 256 locus-v0.1.0.tar.gz
-brew audit --strict Formula/locus.rb
-brew install --build-from-source Formula/locus.rb
-brew test locus
 ```
 
-Commit the checksum update to the Homebrew tap or release branch. Never invent
-the checksum before the immutable tag archive exists.
+Commit the checksum update to the `mustafakarakus/homebrew-tap` repository,
+whose local tap name is `mustafakarakus/tap`. Current Homebrew versions require
+formulae to be audited by tap-qualified name rather than file path:
+
+```sh
+brew tap mustafakarakus/tap
+brew audit --strict mustafakarakus/tap/locus
+brew install --build-from-source mustafakarakus/tap/locus
+brew test mustafakarakus/tap/locus
+```
+
+For initial local validation before the GitHub tap exists, create it with
+`brew tap-new mustafakarakus/tap`, copy the formula into the resulting
+`Formula/` directory, and run the same tap-qualified commands. Never invent the
+checksum before the immutable tag archive exists.
 
 ## 4. Publish Cargo crates
 

@@ -9,8 +9,7 @@ class Locus < Formula
   desc "Local-first, long-term memory layer for AI coding agents"
   homepage "https://github.com/mustafakarakus/locus"
   url "https://github.com/mustafakarakus/locus/archive/refs/tags/v0.1.0.tar.gz"
-  version "0.1.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "c0a45bbd67e828453e67941c7f43b4ba81a1490519e095470dd6b4b40e6e88ae"
   license "MIT"
   head "https://github.com/mustafakarakus/locus.git", branch: "main"
 
