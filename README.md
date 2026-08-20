@@ -51,18 +51,18 @@ native lifecycle hook.
 ## Installation
 
 Locus ships as native binaries with **no runtime dependencies** — the release
-binaries link only against the OS standard libraries. One way to install:
+binaries link only against the OS standard libraries.
+
+### Homebrew (recommended on macOS)
 
 ```bash
-# From a source checkout
-./scripts/install.sh                 # builds release + installs to ~/.local/bin
-# or copy a prebuilt build without compiling
-./scripts/install.sh --from target/release --bin-dir ~/.local/bin
-# remove it later (data untouched)
-./scripts/uninstall.sh
+brew install mustafakarakus/tap/locus
 ```
 
-Via Cargo (installs `locus` and the `locusd` daemon so auto-start works):
+### Cargo
+
+This installs `locus` and its companion binaries so daemon auto-start, MCP, and
+live graph visualization all work:
 
 ```bash
 cargo install --git https://github.com/mustafakarakus/locus --package locus-memory-cli --bin locus --locked
@@ -71,10 +71,15 @@ cargo install --git https://github.com/mustafakarakus/locus --package locus-mcp 
 cargo install --git https://github.com/mustafakarakus/locus --package locus-viz --bin locus-viz --locked
 ```
 
-Via the Locus Homebrew tap:
+### Source checkout
 
 ```bash
-brew install mustafakarakus/tap/locus
+# Build a release and install it to ~/.local/bin
+./scripts/install.sh
+# Or copy an existing release build without compiling
+./scripts/install.sh --from target/release --bin-dir ~/.local/bin
+# Remove installed binaries later (data remains untouched)
+./scripts/uninstall.sh
 ```
 
 Maintainers can find the complete publication checklist in
@@ -93,11 +98,11 @@ to install the agent rules and MCP config.
 
 ### Upgrade path
 
-- **Script install**: re-run `./scripts/install.sh` — it overwrites the
-  binaries in place. Your data in `~/.locus` is never touched.
+- **Homebrew**: `brew upgrade locus`.
 - **Cargo install**: repeat the four commands above with `--force`, or use the
   corresponding `cargo install --upgrade` equivalents when available.
-- **Homebrew**: `brew upgrade locus`.
+- **Script install**: re-run `./scripts/install.sh` — it overwrites the
+  binaries in place. Your data in `~/.locus` is never touched.
 - **Data**: Locus keeps the on-disk format versioned in the `migrations` table;
   `locusd` runs any pending migrations automatically on first start. You never
   need to migrate by hand, and the old version keeps working until you upgrade
