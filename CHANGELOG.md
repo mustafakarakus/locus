@@ -7,16 +7,26 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-### Search Improvements
+## [0.1.1] - 2026-08-24
 
-- Multi-term `memory_search` / `locus search` no longer requires every query
-  token to appear in the same memory. Unquoted terms are OR'd, weak
-  single-token overlaps are dropped by a coverage floor, and each hit/brief
-  bullet reports how much of the query matched (for example `86%`).
-- Queries that mix a topic with a memory type (`tts decision`) match on the
-  stored type as well as the body, still inside the requested namespace.
-- Question-shaped agent queries (`what was the local api decision?`) drop
-  stopwords and wrapping punctuation on the shared MCP/CLI/hook path.
+### Changed
+
+- Unquoted multi-term search uses FTS5 `OR` plus a coverage floor instead of
+  requiring every token in the same memory (D-15). CLI hits and context-brief
+  bullets show how much of the query matched (for example `86%`).
+- Coverage includes memory type, so `tts decision` matches a `type=decision`
+  memory that never says the word "decision", still inside the requested
+  namespace.
+- Question-shaped MCP, CLI, and hook queries drop stopwords and wrapping
+  punctuation. `what was the local api decision?` is searched as `local`,
+  `api`, `decision`.
+
+### Fixed
+
+- Long agent queries returned `NO_RELEVANT_MEMORY` because FTS5 `AND` and the
+  LIKE fallback required the whole sentence to appear verbatim.
+- Two-term queries such as `tts decision` dropped typed memories.
+- Question queries flooded results by matching function words (`the`, `was`).
 
 ## [0.1.0] - 2026-08-18
 
@@ -42,4 +52,5 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Write-time secret detection and redaction.
 - Local namespace isolation and restrictive database permissions.
 
+[0.1.1]: https://github.com/mustafakarakus/locus/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mustafakarakus/locus/releases/tag/v0.1.0

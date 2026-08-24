@@ -558,7 +558,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "locus-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "locus-memory-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "locus-memory-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion",
  "interprocess",
@@ -605,14 +605,14 @@ dependencies = [
 
 [[package]]
 name = "locus-testkit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "locus-memory-core",
 ]
 
 [[package]]
 name = "locus-viz"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "interprocess",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "locusd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",

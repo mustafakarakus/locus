@@ -32,8 +32,8 @@ After approval, merge the release-preparation branch and create an annotated
 tag from a clean `main` branch:
 
 ```sh
-git tag -a v0.1.0 -m "Locus v0.1.0"
-git push origin v0.1.0
+git tag -a v0.1.1 -m "Locus v0.1.1"
+git push origin v0.1.1
 ```
 
 Create the GitHub release from that tag and use the corresponding changelog
@@ -46,9 +46,9 @@ Download the exact archive referenced by `Formula/locus.rb`, calculate its
 checksum, and replace the formula's all-zero placeholder:
 
 ```sh
-curl -L -o locus-v0.1.0.tar.gz \
-  https://github.com/mustafakarakus/locus/archive/refs/tags/v0.1.0.tar.gz
-shasum -a 256 locus-v0.1.0.tar.gz
+curl -L -o locus-v0.1.1.tar.gz \
+  https://github.com/mustafakarakus/locus/archive/refs/tags/v0.1.1.tar.gz
+shasum -a 256 locus-v0.1.1.tar.gz
 ```
 
 Commit the checksum update to the `mustafakarakus/homebrew-tap` repository,
