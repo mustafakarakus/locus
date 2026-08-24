@@ -5,6 +5,15 @@ All notable changes to Locus are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Search Improvements
+
+- Multi-term `memory_search` / `locus search` no longer requires every query
+  token to appear in the same memory. Unquoted terms are OR'd, weak
+  single-token overlaps are dropped by a coverage floor, and each hit/brief
+  bullet reports how much of the query matched (for example `86%`).
+
 ## [0.1.0] - 2026-08-18
 
 ### Added

@@ -432,6 +432,9 @@ Rules:
 - [x] Typo tolerance behavior is measured and documented.
 - [x] Re-ranker orders newer/higher-importance results higher on close relevance.
 - [x] FTS5 table stays consistent with canonical store after insert/update/delete.
+- [x] Unquoted multi-term queries use OR, not AND (D-15).
+- [x] Coverage floor drops single-term overlaps on long agent queries (D-15).
+- [x] Context brief and CLI surface coverage percent (D-15).
 
 ### Definition of Done
 

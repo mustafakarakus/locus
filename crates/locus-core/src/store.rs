@@ -382,11 +382,40 @@ impl Store {
     pub fn search(&self, query: Query) -> Result<Vec<Hit>> {
         query.validate()?;
 
+        let requested = query.limit;
         let engine = Fts5SearchEngine::open_at(self.db_path.clone());
-        let hits = engine.search(&query)?;
-        let signals = self.load_rank_signals_for_hits(&hits)?;
+        let mut engine_query = query.clone();
+        engine_query.limit = search::candidate_limit(requested);
 
-        Ok(search::rerank_hits(hits, &signals))
+        let mut hits = engine.search(&engine_query)?;
+        hits = self.score_and_filter_hits(hits, &query.text)?;
+        if hits.is_empty() {
+            hits = engine.search_like_fallback(&engine_query)?;
+            hits = self.score_and_filter_hits(hits, &query.text)?;
+        }
+
+        let signals = self.load_rank_signals_for_hits(&hits)?;
+        let mut ranked = search::rerank_hits(hits, &signals);
+        ranked.truncate(requested);
+        Ok(ranked)
+    }
+
+    fn score_and_filter_hits(&self, hits: Vec<Hit>, query_text: &str) -> Result<Vec<Hit>> {
+        if hits.is_empty() {
+            return Ok(hits);
+        }
+        let terms = search::extract_query_terms(query_text);
+        let memories = self.load_memories_for_hits(&hits)?;
+        let haystacks = memories
+            .iter()
+            .map(|memory| {
+                (
+                    memory.id.clone(),
+                    search::memory_haystack(&memory.title, &memory.content, &memory.entities),
+                )
+            })
+            .collect();
+        Ok(search::filter_hits_by_coverage(hits, &haystacks, &terms))
     }
 
     /// Retrieves memories surfaced by a search query, returning both the
@@ -418,8 +447,16 @@ impl Store {
         if outcome.hits.is_empty() {
             return Ok((context::NO_RELEVANT_MEMORY.to_string(), Vec::new()));
         }
-        let (brief, selected) =
-            context::build_context_brief_with_selected(&outcome.memories, options);
+        let coverage_by_id = outcome
+            .hits
+            .iter()
+            .map(|hit| (hit.id.clone(), hit.coverage))
+            .collect();
+        let (brief, selected) = context::build_context_brief_with_coverage(
+            &outcome.memories,
+            Some(&coverage_by_id),
+            options,
+        );
         Ok((brief, selected.into_iter().cloned().collect()))
     }
 
@@ -1721,6 +1758,124 @@ mod tests {
             .expect("context brief should succeed");
 
         assert_eq!(brief, context::NO_RELEVANT_MEMORY);
+    }
+
+    #[test]
+    fn long_agent_query_matches_partial_overlap_and_drops_weak_hits() {
+        let (store, _tmp, _) = test_store();
+        let full_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "UC-119 TTS sentence-chunked PCM".to_string(),
+                content: "TtsClient POSTs {tts.url}/v1/audio/speech (text/plain, X-Language, X-Engine). Primary chatterbox, fallback piper on 5xx.".to_string(),
+                entities: vec!["chatterbox".to_string()],
+                importance: 80,
+                source: None,
+            })
+            .expect("insert full");
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Note,
+                title: "Chatterbox CUDA speedup".to_string(),
+                content: "Chatterbox CUDA graphs are not portable to MPS.".to_string(),
+                entities: vec!["chatterbox".to_string()],
+                importance: 40,
+                source: None,
+            })
+            .expect("insert weak chatterbox");
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Code,
+                title: "LLM client".to_string(),
+                content: "LlmClient POSTs {llm.url}/v1/chat/completions on the bus.".to_string(),
+                entities: vec![],
+                importance: 40,
+                source: None,
+            })
+            .expect("insert weak posts");
+
+        let mut query = Query::new("TtsClient POSTs audio speech X-Language X-Engine chatterbox");
+        query.namespace = Some("project:voice".to_string());
+        query.limit = 5;
+        let hits = store.search(query.clone()).expect("search should succeed");
+
+        assert_eq!(hits.len(), 1, "weak single-term overlaps must be dropped");
+        assert_eq!(hits[0].id, full_id);
+        assert!(
+            hits[0].coverage >= 0.85,
+            "expected high coverage, got {}",
+            hits[0].coverage
+        );
+
+        let brief = store
+            .context_brief(query, ContextBriefOptions::default())
+            .expect("brief");
+        assert!(
+            brief.contains("(100%)") || brief.contains("(85%") || brief.contains("%):"),
+            "brief must show coverage percent, got: {brief}"
+        );
+        assert!(brief.contains("UC-119"), "got: {brief}");
+        assert!(!brief.contains("CUDA graphs"), "got: {brief}");
+    }
+
+    #[test]
+    fn single_term_query_still_returns_all_matches() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Note,
+                title: "Chatterbox CUDA speedup".to_string(),
+                content: "Chatterbox CUDA graphs are not portable to MPS.".to_string(),
+                entities: vec!["chatterbox".to_string()],
+                importance: 40,
+                source: None,
+            })
+            .expect("insert");
+
+        let mut query = Query::new("chatterbox");
+        query.namespace = Some("project:voice".to_string());
+        let hits = store.search(query).expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].coverage, 1.0);
+    }
+
+    #[test]
+    fn two_term_query_still_requires_both_terms() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Code,
+                title: "Auth middleware".to_string(),
+                content: "Use auth service middleware for token verification".to_string(),
+                entities: vec![],
+                importance: 65,
+                source: None,
+            })
+            .expect("insert");
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Fact,
+                title: "JWT notes".to_string(),
+                content: "Rotate the token weekly".to_string(),
+                entities: vec![],
+                importance: 20,
+                source: None,
+            })
+            .expect("insert token-only");
+
+        let mut query = Query::new("token verification");
+        query.namespace = Some("project:auth".to_string());
+        let hits = store.search(query).expect("search");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.to_lowercase().contains("verification") || hits[0].id.len() == 36);
     }
 
     #[cfg(unix)]

@@ -324,5 +324,28 @@ by the first 100k run are now locked in.
   < 15 ms, context p95 < 30 ms, CLI cold start p95 < 50 ms, daemon idle RSS
   < 25 MB.
 
+### D-15 — Multi-term search is OR + coverage, not AND
+Agent queries are long bags of distinctive tokens (`TtsClient POSTs audio
+speech X-Language X-Engine chatterbox`), not phrases the user expects to
+appear verbatim. FTS5 `MATCH` treats a space as AND, so quoting every token
+and joining with spaces required every term to appear in the same memory.
+The LIKE fallback then searched for the entire query as one substring, which
+also missed. Short queries (`chatterbox`) worked; long ones returned
+`NO_RELEVANT_MEMORY` even when a highly overlapping memory existed.
+
+Locked behavior:
+
+- Unquoted terms compile to FTS5 `OR` of quoted tokens. Quoted phrases and
+  `*` prefix queries stay user-authored FTS syntax.
+- LIKE fallback is per-term OR, still scanning the FTS shadow table (D-14).
+- A shared coverage layer (matched query terms / query terms) drops weak
+  hits: 1-term stays exact, 2-term stays AND-like, longer queries require
+  at least two terms or 30% coverage, whichever is larger.
+- Coverage is stored on `Hit` (0.0–1.0), shown as a percent on CLI hits and
+  on MCP/hook context-brief bullets. Summary briefs (no query) stay
+  unannotated.
+- FTS still fetches a candidate window (`limit * 5`, min 24) before
+  coverage-filtering so generic tokens cannot occupy the whole `LIMIT`.
+
 
 

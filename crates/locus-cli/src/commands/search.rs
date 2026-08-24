@@ -64,11 +64,11 @@ impl SearchCmd {
             );
             for (i, hit) in hits.iter().enumerate() {
                 println!(
-                    "\n{}. [{}] {} (relevance: {:.2})",
+                    "\n{}. [{}] {} ({}% relevant)",
                     i + 1,
                     hit.id,
                     hit.snippet,
-                    hit.relevance
+                    locus_core::search::coverage_percent(hit.coverage)
                 );
             }
         }

@@ -27,6 +27,7 @@ struct BriefItem {
     text: String,
     normalized: String,
     updated_at: i64,
+    coverage: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,12 +70,28 @@ pub fn build_context_brief_with_selected(
     memories: &[Memory],
     options: ContextBriefOptions,
 ) -> (String, Vec<&Memory>) {
+    build_context_brief_with_coverage(memories, None, options)
+}
+
+/// Like [`build_context_brief_with_selected`], annotating each bullet with the
+/// query-term coverage of the hit when `coverage_by_id` is provided.
+pub fn build_context_brief_with_coverage<'a>(
+    memories: &'a [Memory],
+    coverage_by_id: Option<&HashMap<String, f32>>,
+    options: ContextBriefOptions,
+) -> (String, Vec<&'a Memory>) {
     let budget = options.token_budget.max(1);
     if memories.is_empty() {
         return (NO_RELEVANT_MEMORY.to_string(), Vec::new());
     }
 
-    let mut items = memories.iter().map(memory_to_item).collect::<Vec<_>>();
+    let mut items = memories
+        .iter()
+        .map(|memory| {
+            let coverage = coverage_by_id.and_then(|map| map.get(&memory.id).copied());
+            memory_to_item(memory, coverage)
+        })
+        .collect::<Vec<_>>();
 
     dedupe_items(&mut items);
     if items.is_empty() {
@@ -85,6 +102,12 @@ pub fn build_context_brief_with_selected(
         left.category
             .order()
             .cmp(&right.category.order())
+            .then_with(|| {
+                right
+                    .coverage
+                    .partial_cmp(&left.coverage)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| right.updated_at.cmp(&left.updated_at))
             .then_with(|| left.id.cmp(&right.id))
     });
@@ -111,10 +134,12 @@ pub fn estimated_tokens(markdown: &str) -> usize {
     words.saturating_mul(4).div_ceil(3)
 }
 
-fn memory_to_item(memory: &Memory) -> BriefItem {
+fn memory_to_item(memory: &Memory, coverage: Option<f32>) -> BriefItem {
     let category = category_for(memory.memory_type);
-    let text = bullet_text(memory);
-    let normalized = normalize_for_dedupe(&text);
+    let text = bullet_text(memory, coverage);
+    // Dedupe on the unannotated bullet so the same memory text still collapses
+    // when two hits differ only by coverage.
+    let normalized = normalize_for_dedupe(&bullet_text(memory, None));
 
     BriefItem {
         id: memory.id.clone(),
@@ -122,6 +147,7 @@ fn memory_to_item(memory: &Memory) -> BriefItem {
         text,
         normalized,
         updated_at: memory.updated_at,
+        coverage: coverage.unwrap_or(0.0),
     }
 }
 
@@ -139,15 +165,30 @@ fn category_for(memory_type: MemoryType) -> Category {
     }
 }
 
-fn bullet_text(memory: &Memory) -> String {
+fn bullet_text(memory: &Memory, coverage: Option<f32>) -> String {
     let title = memory.title.trim();
     let content = memory.content.trim();
+    let percent = coverage.map(|value| format!(" ({}%)", crate::search::coverage_percent(value)));
     if title.is_empty() {
-        clip_chars(content, 180)
+        match percent {
+            Some(pct) => format!("{}{}", clip_chars(content, 180), pct),
+            None => clip_chars(content, 180),
+        }
     } else if content.is_empty() {
-        clip_chars(title, 180)
+        match percent {
+            Some(pct) => format!("{}{}", clip_chars(title, 180), pct),
+            None => clip_chars(title, 180),
+        }
     } else {
-        format!("{}: {}", clip_chars(title, 80), clip_chars(content, 180))
+        match percent {
+            Some(pct) => format!(
+                "{}{}: {}",
+                clip_chars(title, 80),
+                pct,
+                clip_chars(content, 180)
+            ),
+            None => format!("{}: {}", clip_chars(title, 80), clip_chars(content, 180)),
+        }
     }
 }
 
@@ -426,5 +467,28 @@ mod tests {
         let first = build_context_brief(&memories, ContextBriefOptions::default());
         let second = build_context_brief(&memories, ContextBriefOptions::default());
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn coverage_is_annotated_on_bullets_when_provided() {
+        let memories = vec![sample_memory(
+            "1",
+            MemoryType::Decision,
+            "UC-119 TTS",
+            "TtsClient POSTs X-Language",
+            10,
+        )];
+        let mut coverage = HashMap::new();
+        coverage.insert("1".to_string(), 0.86);
+        let brief = build_context_brief_with_coverage(
+            &memories,
+            Some(&coverage),
+            ContextBriefOptions::default(),
+        )
+        .0;
+        assert!(
+            brief.contains("UC-119 TTS (86%): TtsClient POSTs X-Language"),
+            "got: {brief}"
+        );
     }
 }
