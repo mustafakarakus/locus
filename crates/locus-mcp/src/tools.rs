@@ -36,7 +36,9 @@ pub fn catalog() -> Vec<Tool> {
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query (terms, identifiers, decisions)."
+                        "description": "Search query. Natural-language questions are fine; \
+                            Locus extracts content terms (e.g. 'what was the local api \
+                            decision?' searches local, api, decision). Prefer a namespace."
                     },
                     "namespace": {
                         "type": "string",

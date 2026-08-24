@@ -411,7 +411,12 @@ impl Store {
             .map(|memory| {
                 (
                     memory.id.clone(),
-                    search::memory_haystack(&memory.title, &memory.content, &memory.entities),
+                    search::memory_haystack(
+                        &memory.title,
+                        &memory.content,
+                        &memory.entities,
+                        memory.memory_type,
+                    ),
                 )
             })
             .collect();
@@ -1875,7 +1880,126 @@ mod tests {
         query.namespace = Some("project:auth".to_string());
         let hits = store.search(query).expect("search");
         assert_eq!(hits.len(), 1);
-        assert!(hits[0].snippet.to_lowercase().contains("verification") || hits[0].id.len() == 36);
+        assert!(
+            hits[0].snippet.to_lowercase().contains("verification"),
+            "token-only row must stay dropped, got {}",
+            hits[0].snippet
+        );
+    }
+
+    #[test]
+    fn tts_decision_matches_type_and_does_not_cross_namespaces() {
+        let (store, _tmp, _) = test_store();
+        let tts_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "UC-119 TTS sentence-chunked PCM".to_string(),
+                content: "TtsClient POSTs {tts.url}/v1/audio/speech. Primary chatterbox."
+                    .to_string(),
+                entities: vec![],
+                importance: 80,
+                source: None,
+            })
+            .expect("insert tts decision");
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Note,
+                title: "TTS scratch notes".to_string(),
+                content: "Chatterbox CUDA graphs are not portable to MPS.".to_string(),
+                entities: vec![],
+                importance: 40,
+                source: None,
+            })
+            .expect("insert tts note");
+
+        let whisper_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:asr".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Whisper is the STT engine".to_string(),
+                content: "Use Whisper for transcription on the STT path.".to_string(),
+                entities: vec![],
+                importance: 80,
+                source: None,
+            })
+            .expect("insert whisper decision");
+
+        let mut tts_query = Query::new("tts decision");
+        tts_query.namespace = Some("project:voice".to_string());
+        let hits = store.search(tts_query).expect("voice tts decision");
+        assert_eq!(
+            hits.len(),
+            1,
+            "tts notes and other projects must be dropped"
+        );
+        assert_eq!(hits[0].id, tts_id);
+
+        let mut whisper_in_voice = Query::new("whisper decision");
+        whisper_in_voice.namespace = Some("project:voice".to_string());
+        let hits = store
+            .search(whisper_in_voice)
+            .expect("whisper must not leak into voice");
+        assert!(hits.is_empty(), "got {:?}", hits);
+
+        let mut whisper_query = Query::new("whisper decision");
+        whisper_query.namespace = Some("project:asr".to_string());
+        let hits = store.search(whisper_query).expect("asr whisper decision");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, whisper_id);
+
+        let mut tts_in_asr = Query::new("tts");
+        tts_in_asr.namespace = Some("project:asr".to_string());
+        let hits = store.search(tts_in_asr).expect("tts in asr");
+        assert!(
+            hits.iter().all(|hit| hit.id != tts_id),
+            "voice TTS must not leak into project:asr, got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn agent_question_search_ignores_stopwords() {
+        let (store, _tmp, _) = test_store();
+        let api_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:living".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "UC-106 Local API contract".to_string(),
+                content: "Local API serves techstack on TLS 8443 with scoped tokens.".to_string(),
+                entities: vec![],
+                importance: 80,
+                source: None,
+            })
+            .expect("insert local api");
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:living".to_string()),
+                memory_type: MemoryType::Note,
+                title: "Worker restart".to_string(),
+                content: "The worker was restarted after the deploy.".to_string(),
+                entities: vec![],
+                importance: 20,
+                source: None,
+            })
+            .expect("insert stopword bait");
+
+        let mut query = Query::new("what was the local api decision?");
+        query.namespace = Some("project:living".to_string());
+        let hits = store.search(query).expect("question search");
+        assert_eq!(
+            hits.len(),
+            1,
+            "stopword-only rows must be dropped, got {hits:?}"
+        );
+        assert_eq!(hits[0].id, api_id);
+        assert!(
+            hits[0].coverage >= 0.99,
+            "expected full content-term coverage, got {}",
+            hits[0].coverage
+        );
     }
 
     #[cfg(unix)]

@@ -12,6 +12,18 @@ use crate::{Error, Result};
 /// Shortest term kept as a query token. One-character tokens are noise in FTS5
 /// (prefix indexes start at 2) and would make LIKE `%a%` match almost everything.
 const MIN_TERM_CHARS: usize = 2;
+/// Function and question words agents paste into MCP queries. They are not
+/// content and would OR-match almost every memory (`the`, `what`, `was`).
+const SEARCH_STOP_WORDS: &[&str] = &[
+    "a", "about", "all", "also", "am", "an", "and", "any", "are", "at", "be", "been", "being",
+    "but", "by", "can", "could", "describe", "did", "do", "does", "explain", "find", "for", "from",
+    "get", "give", "had", "has", "have", "how", "i", "if", "in", "into", "is", "it", "its", "just",
+    "look", "may", "me", "might", "my", "no", "not", "of", "on", "only", "onto", "or", "our",
+    "over", "please", "really", "shall", "should", "show", "so", "tell", "than", "that", "the",
+    "their", "them", "then", "these", "they", "this", "those", "to", "use", "used", "using",
+    "very", "was", "we", "were", "what", "when", "where", "which", "who", "whom", "whose", "why",
+    "will", "with", "without", "would", "yes", "you", "your",
+];
 /// Fetch this many extra FTS candidates before coverage-filtering down to `limit`.
 const CANDIDATE_MULTIPLIER: usize = 5;
 const CANDIDATE_FLOOR: usize = 24;
@@ -393,20 +405,30 @@ fn has_unbalanced_quotes(text: &str) -> bool {
     text.chars().filter(|ch| *ch == '"').count() % 2 == 1
 }
 
+fn strip_wrapping_punct(value: &str) -> &str {
+    value.trim_matches(|c: char| !(c.is_alphanumeric() || matches!(c, '-' | '_' | ':' | '.' | '/')))
+}
+
 fn push_term(terms: &mut Vec<String>, current: &mut String) {
     let raw = std::mem::take(current);
-    let stripped = raw.trim().trim_matches('*').trim();
+    let stripped = strip_wrapping_punct(raw.trim().trim_matches('*').trim());
     if stripped.chars().count() < MIN_TERM_CHARS {
         return;
     }
-    terms.push(stripped.to_lowercase());
+    let lower = stripped.to_lowercase();
+    if SEARCH_STOP_WORDS.contains(&lower.as_str()) {
+        return;
+    }
+    terms.push(lower);
 }
 
 /// Split a query into terms for OR retrieval and coverage scoring.
 ///
-/// Quoted spans stay a single term (`"token verification"`). `*` is stripped
-/// so prefix queries still contribute to coverage. One-character tokens are
-/// dropped. Duplicates are removed, first occurrence kept.
+/// Agents send questions over MCP (`what was the local api decision?`); this
+/// keeps content tokens only. Quoted spans stay a single term
+/// (`"token verification"`). `*` and wrapping punctuation are stripped.
+/// One-character tokens and stopwords are dropped. Duplicates are removed,
+/// first occurrence kept.
 pub(crate) fn extract_query_terms(text: &str) -> Vec<String> {
     let mut terms = Vec::new();
     let mut current = String::new();
@@ -498,8 +520,22 @@ pub(crate) fn candidate_limit(requested: usize) -> usize {
         .max(CANDIDATE_FLOOR)
 }
 
-pub(crate) fn memory_haystack(title: &str, content: &str, entities: &[String]) -> String {
-    format!("{} {} {}", title, content, entities.join(" ")).to_lowercase()
+pub(crate) fn memory_haystack(
+    title: &str,
+    content: &str,
+    entities: &[String],
+    memory_type: MemoryType,
+) -> String {
+    // Type lives in `memories.type`, not FTS text. Include it so queries like
+    // "tts decision" can match a decision that never says the word "decision".
+    format!(
+        "{} {} {} {}",
+        title,
+        content,
+        entities.join(" "),
+        memory_type.as_str()
+    )
+    .to_lowercase()
 }
 
 pub(crate) fn filter_hits_by_coverage(
@@ -639,6 +675,22 @@ mod tests {
     }
 
     #[test]
+    fn question_query_keeps_content_terms_only() {
+        assert_eq!(
+            extract_query_terms("what was the local api decision?"),
+            vec![
+                "local".to_string(),
+                "api".to_string(),
+                "decision".to_string()
+            ]
+        );
+        assert_eq!(
+            Fts5SearchEngine::compile_fts_match("what was the local api decision?"),
+            "\"local\" OR \"api\" OR \"decision\""
+        );
+    }
+
+    #[test]
     fn prefix_query_is_passed_through() {
         assert_eq!(Fts5SearchEngine::compile_fts_match("post*"), "post*");
     }
@@ -685,20 +737,66 @@ mod tests {
                 "UC-119 TTS",
                 "TtsClient POSTs audio/speech X-Language X-Engine primary chatterbox",
                 &[],
+                MemoryType::Decision,
             ),
         );
         haystacks.insert(
             "posts-only".to_string(),
-            memory_haystack("LLM", "LlmClient POSTs chat completions", &[]),
+            memory_haystack(
+                "LLM",
+                "LlmClient POSTs chat completions",
+                &[],
+                MemoryType::Code,
+            ),
         );
         haystacks.insert(
             "chatterbox-only".to_string(),
-            memory_haystack("Speed", "Chatterbox CUDA speedup", &[]),
+            memory_haystack("Speed", "Chatterbox CUDA speedup", &[], MemoryType::Note),
         );
 
         let kept = filter_hits_by_coverage(hits, &haystacks, &terms);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].id, "full");
+        assert_eq!(coverage_percent(kept[0].coverage), 100);
+    }
+
+    #[test]
+    fn type_name_in_query_matches_memory_type() {
+        let terms = extract_query_terms("tts decision");
+        assert_eq!(terms, vec!["tts".to_string(), "decision".to_string()]);
+
+        let hits = vec![
+            Hit {
+                id: "typed".to_string(),
+                relevance: 10.0,
+                coverage: 0.0,
+                snippet: String::new(),
+            },
+            Hit {
+                id: "note".to_string(),
+                relevance: 8.0,
+                coverage: 0.0,
+                snippet: String::new(),
+            },
+        ];
+        let mut haystacks = HashMap::new();
+        haystacks.insert(
+            "typed".to_string(),
+            memory_haystack(
+                "UC-119 TTS",
+                "TtsClient POSTs audio/speech",
+                &[],
+                MemoryType::Decision,
+            ),
+        );
+        haystacks.insert(
+            "note".to_string(),
+            memory_haystack("TTS speed", "Chatterbox CUDA notes", &[], MemoryType::Note),
+        );
+
+        let kept = filter_hits_by_coverage(hits, &haystacks, &terms);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "typed");
         assert_eq!(coverage_percent(kept[0].coverage), 100);
     }
 

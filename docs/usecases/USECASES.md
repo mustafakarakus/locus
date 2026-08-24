@@ -435,6 +435,10 @@ Rules:
 - [x] Unquoted multi-term queries use OR, not AND (D-15).
 - [x] Coverage floor drops single-term overlaps on long agent queries (D-15).
 - [x] Context brief and CLI surface coverage percent (D-15).
+- [x] Topic + type queries (`tts decision`) match stored type inside the
+      requested namespace; other-project decoys (e.g. Whisper) do not leak (D-15).
+- [x] Question-shaped MCP queries drop stopwords and search content terms
+      only (D-15).
 
 ### Definition of Done
 

@@ -13,6 +13,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   token to appear in the same memory. Unquoted terms are OR'd, weak
   single-token overlaps are dropped by a coverage floor, and each hit/brief
   bullet reports how much of the query matched (for example `86%`).
+- Queries that mix a topic with a memory type (`tts decision`) match on the
+  stored type as well as the body, still inside the requested namespace.
+- Question-shaped agent queries (`what was the local api decision?`) drop
+  stopwords and wrapping punctuation on the shared MCP/CLI/hook path.
 
 ## [0.1.0] - 2026-08-18
 
