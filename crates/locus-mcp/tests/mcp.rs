@@ -255,6 +255,52 @@ fn memory_save_search_forget_round_trip() {
 }
 
 #[test]
+fn question_shaped_memory_search_finds_decision() {
+    let mut server = McpServer::start();
+
+    let save = server.call_tool(
+        "memory_save",
+        json!({
+            "content": "Local API serves techstack on TLS 8443 with scoped tokens.",
+            "type": "decision",
+            "namespace": "project:living",
+            "title": "UC-106 Local API contract"
+        }),
+    );
+    assert!(!McpServer::is_tool_error(&save), "{save}");
+
+    let bait = server.call_tool(
+        "memory_save",
+        json!({
+            "content": "The worker was restarted after the deploy.",
+            "type": "note",
+            "namespace": "project:living",
+            "title": "Worker restart"
+        }),
+    );
+    assert!(!McpServer::is_tool_error(&bait), "{bait}");
+
+    let search = server.call_tool(
+        "memory_search",
+        json!({
+            "query": "what was the local api decision?",
+            "namespace": "project:living"
+        }),
+    );
+    assert!(!McpServer::is_tool_error(&search), "{search}");
+    let brief = McpServer::tool_text(&search);
+    assert!(
+        brief.contains("UC-106") || brief.contains("Local API"),
+        "question query must hit the decision, got: {brief}"
+    );
+    assert!(
+        !brief.contains("Worker restart"),
+        "stopword bait must stay out of the brief, got: {brief}"
+    );
+    assert!(!brief.contains("NO_RELEVANT_MEMORY"), "{brief}");
+}
+
+#[test]
 fn invalid_tool_input_returns_structured_error() {
     let mut server = McpServer::start();
     let response = server.call_tool("memory_save", json!({ "type": "decision" }));

@@ -382,11 +382,45 @@ impl Store {
     pub fn search(&self, query: Query) -> Result<Vec<Hit>> {
         query.validate()?;
 
+        let requested = query.limit;
         let engine = Fts5SearchEngine::open_at(self.db_path.clone());
-        let hits = engine.search(&query)?;
-        let signals = self.load_rank_signals_for_hits(&hits)?;
+        let mut engine_query = query.clone();
+        engine_query.limit = search::candidate_limit(requested);
 
-        Ok(search::rerank_hits(hits, &signals))
+        let mut hits = engine.search(&engine_query)?;
+        hits = self.score_and_filter_hits(hits, &query.text)?;
+        if hits.is_empty() {
+            hits = engine.search_like_fallback(&engine_query)?;
+            hits = self.score_and_filter_hits(hits, &query.text)?;
+        }
+
+        let signals = self.load_rank_signals_for_hits(&hits)?;
+        let mut ranked = search::rerank_hits(hits, &signals);
+        ranked.truncate(requested);
+        Ok(ranked)
+    }
+
+    fn score_and_filter_hits(&self, hits: Vec<Hit>, query_text: &str) -> Result<Vec<Hit>> {
+        if hits.is_empty() {
+            return Ok(hits);
+        }
+        let terms = search::extract_query_terms(query_text);
+        let memories = self.load_memories_for_hits(&hits)?;
+        let haystacks = memories
+            .iter()
+            .map(|memory| {
+                (
+                    memory.id.clone(),
+                    search::memory_haystack(
+                        &memory.title,
+                        &memory.content,
+                        &memory.entities,
+                        memory.memory_type,
+                    ),
+                )
+            })
+            .collect();
+        Ok(search::filter_hits_by_coverage(hits, &haystacks, &terms))
     }
 
     /// Retrieves memories surfaced by a search query, returning both the
@@ -418,8 +452,16 @@ impl Store {
         if outcome.hits.is_empty() {
             return Ok((context::NO_RELEVANT_MEMORY.to_string(), Vec::new()));
         }
-        let (brief, selected) =
-            context::build_context_brief_with_selected(&outcome.memories, options);
+        let coverage_by_id = outcome
+            .hits
+            .iter()
+            .map(|hit| (hit.id.clone(), hit.coverage))
+            .collect();
+        let (brief, selected) = context::build_context_brief_with_coverage(
+            &outcome.memories,
+            Some(&coverage_by_id),
+            options,
+        );
         Ok((brief, selected.into_iter().cloned().collect()))
     }
 
@@ -1721,6 +1763,243 @@ mod tests {
             .expect("context brief should succeed");
 
         assert_eq!(brief, context::NO_RELEVANT_MEMORY);
+    }
+
+    #[test]
+    fn long_agent_query_matches_partial_overlap_and_drops_weak_hits() {
+        let (store, _tmp, _) = test_store();
+        let full_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "UC-119 TTS sentence-chunked PCM".to_string(),
+                content: "TtsClient POSTs {tts.url}/v1/audio/speech (text/plain, X-Language, X-Engine). Primary chatterbox, fallback piper on 5xx.".to_string(),
+                entities: vec!["chatterbox".to_string()],
+                importance: 80,
+                source: None,
+            })
+            .expect("insert full");
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Note,
+                title: "Chatterbox CUDA speedup".to_string(),
+                content: "Chatterbox CUDA graphs are not portable to MPS.".to_string(),
+                entities: vec!["chatterbox".to_string()],
+                importance: 40,
+                source: None,
+            })
+            .expect("insert weak chatterbox");
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Code,
+                title: "LLM client".to_string(),
+                content: "LlmClient POSTs {llm.url}/v1/chat/completions on the bus.".to_string(),
+                entities: vec![],
+                importance: 40,
+                source: None,
+            })
+            .expect("insert weak posts");
+
+        let mut query = Query::new("TtsClient POSTs audio speech X-Language X-Engine chatterbox");
+        query.namespace = Some("project:voice".to_string());
+        query.limit = 5;
+        let hits = store.search(query.clone()).expect("search should succeed");
+
+        assert_eq!(hits.len(), 1, "weak single-term overlaps must be dropped");
+        assert_eq!(hits[0].id, full_id);
+        assert!(
+            hits[0].coverage >= 0.85,
+            "expected high coverage, got {}",
+            hits[0].coverage
+        );
+
+        let brief = store
+            .context_brief(query, ContextBriefOptions::default())
+            .expect("brief");
+        assert!(
+            brief.contains("(100%)") || brief.contains("(85%") || brief.contains("%):"),
+            "brief must show coverage percent, got: {brief}"
+        );
+        assert!(brief.contains("UC-119"), "got: {brief}");
+        assert!(!brief.contains("CUDA graphs"), "got: {brief}");
+    }
+
+    #[test]
+    fn single_term_query_still_returns_all_matches() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Note,
+                title: "Chatterbox CUDA speedup".to_string(),
+                content: "Chatterbox CUDA graphs are not portable to MPS.".to_string(),
+                entities: vec!["chatterbox".to_string()],
+                importance: 40,
+                source: None,
+            })
+            .expect("insert");
+
+        let mut query = Query::new("chatterbox");
+        query.namespace = Some("project:voice".to_string());
+        let hits = store.search(query).expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].coverage, 1.0);
+    }
+
+    #[test]
+    fn two_term_query_still_requires_both_terms() {
+        let (store, _tmp, _) = test_store();
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Code,
+                title: "Auth middleware".to_string(),
+                content: "Use auth service middleware for token verification".to_string(),
+                entities: vec![],
+                importance: 65,
+                source: None,
+            })
+            .expect("insert");
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:auth".to_string()),
+                memory_type: MemoryType::Fact,
+                title: "JWT notes".to_string(),
+                content: "Rotate the token weekly".to_string(),
+                entities: vec![],
+                importance: 20,
+                source: None,
+            })
+            .expect("insert token-only");
+
+        let mut query = Query::new("token verification");
+        query.namespace = Some("project:auth".to_string());
+        let hits = store.search(query).expect("search");
+        assert_eq!(hits.len(), 1);
+        assert!(
+            hits[0].snippet.to_lowercase().contains("verification"),
+            "token-only row must stay dropped, got {}",
+            hits[0].snippet
+        );
+    }
+
+    #[test]
+    fn tts_decision_matches_type_and_does_not_cross_namespaces() {
+        let (store, _tmp, _) = test_store();
+        let tts_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "UC-119 TTS sentence-chunked PCM".to_string(),
+                content: "TtsClient POSTs {tts.url}/v1/audio/speech. Primary chatterbox."
+                    .to_string(),
+                entities: vec![],
+                importance: 80,
+                source: None,
+            })
+            .expect("insert tts decision");
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:voice".to_string()),
+                memory_type: MemoryType::Note,
+                title: "TTS scratch notes".to_string(),
+                content: "Chatterbox CUDA graphs are not portable to MPS.".to_string(),
+                entities: vec![],
+                importance: 40,
+                source: None,
+            })
+            .expect("insert tts note");
+
+        let whisper_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:asr".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "Whisper is the STT engine".to_string(),
+                content: "Use Whisper for transcription on the STT path.".to_string(),
+                entities: vec![],
+                importance: 80,
+                source: None,
+            })
+            .expect("insert whisper decision");
+
+        let mut tts_query = Query::new("tts decision");
+        tts_query.namespace = Some("project:voice".to_string());
+        let hits = store.search(tts_query).expect("voice tts decision");
+        assert_eq!(
+            hits.len(),
+            1,
+            "tts notes and other projects must be dropped"
+        );
+        assert_eq!(hits[0].id, tts_id);
+
+        let mut whisper_in_voice = Query::new("whisper decision");
+        whisper_in_voice.namespace = Some("project:voice".to_string());
+        let hits = store
+            .search(whisper_in_voice)
+            .expect("whisper must not leak into voice");
+        assert!(hits.is_empty(), "got {:?}", hits);
+
+        let mut whisper_query = Query::new("whisper decision");
+        whisper_query.namespace = Some("project:asr".to_string());
+        let hits = store.search(whisper_query).expect("asr whisper decision");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, whisper_id);
+
+        let mut tts_in_asr = Query::new("tts");
+        tts_in_asr.namespace = Some("project:asr".to_string());
+        let hits = store.search(tts_in_asr).expect("tts in asr");
+        assert!(
+            hits.iter().all(|hit| hit.id != tts_id),
+            "voice TTS must not leak into project:asr, got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn agent_question_search_ignores_stopwords() {
+        let (store, _tmp, _) = test_store();
+        let api_id = store
+            .insert_memory(NewMemory {
+                namespace: Some("project:living".to_string()),
+                memory_type: MemoryType::Decision,
+                title: "UC-106 Local API contract".to_string(),
+                content: "Local API serves techstack on TLS 8443 with scoped tokens.".to_string(),
+                entities: vec![],
+                importance: 80,
+                source: None,
+            })
+            .expect("insert local api");
+
+        store
+            .insert_memory(NewMemory {
+                namespace: Some("project:living".to_string()),
+                memory_type: MemoryType::Note,
+                title: "Worker restart".to_string(),
+                content: "The worker was restarted after the deploy.".to_string(),
+                entities: vec![],
+                importance: 20,
+                source: None,
+            })
+            .expect("insert stopword bait");
+
+        let mut query = Query::new("what was the local api decision?");
+        query.namespace = Some("project:living".to_string());
+        let hits = store.search(query).expect("question search");
+        assert_eq!(
+            hits.len(),
+            1,
+            "stopword-only rows must be dropped, got {hits:?}"
+        );
+        assert_eq!(hits[0].id, api_id);
+        assert!(
+            hits[0].coverage >= 0.99,
+            "expected full content-term coverage, got {}",
+            hits[0].coverage
+        );
     }
 
     #[cfg(unix)]

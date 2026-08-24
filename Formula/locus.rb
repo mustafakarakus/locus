@@ -2,14 +2,14 @@
 #
 # Installs all four Locus binaries from a source tarball.
 # Publish a tagged release first and set the url/sha256 below:
-#   git tag v0.1.0 && git push --tags
-#   url  = https://github.com/mustafakarakus/locus/archive/refs/tags/v0.1.0.tar.gz
+#   git tag v0.1.1 && git push --tags
+#   url  = https://github.com/mustafakarakus/locus/archive/refs/tags/v0.1.1.tar.gz
 #   sha256 = shasum -a 256 <tarball>
 class Locus < Formula
   desc "Local-first, long-term memory layer for AI coding agents"
   homepage "https://github.com/mustafakarakus/locus"
-  url "https://github.com/mustafakarakus/locus/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "c0a45bbd67e828453e67941c7f43b4ba81a1490519e095470dd6b4b40e6e88ae"
+  url "https://github.com/mustafakarakus/locus/archive/refs/tags/v0.1.1.tar.gz"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
   head "https://github.com/mustafakarakus/locus.git", branch: "main"
 
@@ -30,7 +30,7 @@ class Locus < Formula
 
   test do
     assert_match "Local-first", shell_output("#{bin}/locus --help")
-    assert_match "0.1.0", shell_output("#{bin}/locus --version")
+    assert_match "0.1.1", shell_output("#{bin}/locus --version")
     assert_predicate bin/"locusd", :executable?
     assert_predicate bin/"locus-mcp", :executable?
     assert_predicate bin/"locus-viz", :executable?

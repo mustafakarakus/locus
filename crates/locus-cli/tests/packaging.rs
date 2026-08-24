@@ -44,7 +44,7 @@ fn binary_starts_and_reports_version() {
     assert!(out.status.success(), "locus --version failed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("0.1.0"),
+        stdout.contains(env!("CARGO_PKG_VERSION")),
         "unexpected version output: {stdout}"
     );
 }
